@@ -43,6 +43,7 @@ enum Action {
         text: String,
     },
     DeleteClip(i64),
+    ImportPasteBar,
     Hide,
     Quit,
 }
@@ -144,7 +145,10 @@ impl egui_software_backend::App for PegaApp {
 
         // Cerrar la ventana la oculta (sigue escuchando); "Salir" la cierra de verdad.
         // Sin atajo global no habría forma de volver a abrirla, así que ahí sí se cierra.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && st.hotkey_ok {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.quitting
+            && win::can_reopen(st.hotkey_ok)
+        {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             actions.push(Action::Hide);
         }
@@ -216,13 +220,23 @@ impl egui_software_backend::App for PegaApp {
         egui::Panel::top("top").show_inside(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui
-                    .button("Salir")
-                    .on_hover_text("Cierra Pega por completo")
-                    .clicked()
-                {
-                    actions.push(Action::Quit);
-                }
+                ui.menu_button("…", |ui| {
+                    let mut autostart = crate::autostart::is_enabled();
+                    if ui.checkbox(&mut autostart, "Iniciar con Windows").changed() {
+                        crate::autostart::set(autostart);
+                    }
+                    if ui.button("Importar de PasteBar").clicked() {
+                        actions.push(Action::ImportPasteBar);
+                    }
+                    ui.separator();
+                    if ui
+                        .button("Salir")
+                        .on_hover_text("Cierra Pega por completo")
+                        .clicked()
+                    {
+                        actions.push(Action::Quit);
+                    }
+                });
                 let now = ctx.input(|i| i.time);
                 match &self.flash {
                     Some((msg, until)) if *until > now => {
@@ -449,7 +463,7 @@ impl egui_software_backend::App for PegaApp {
                                 ui.strong(&b.name);
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.menu_button("⋯", |ui| {
+                                ui.menu_button("…", |ui| {
                                     if ui.button("Renombrar").clicked() {
                                         self.renaming = Some((b.id, b.name.clone()));
                                     }
@@ -575,17 +589,37 @@ impl PegaApp {
                         }
                     };
                     if !ok {
-                        self.flash("No se pudo copiar", ctx);
+                        self.flash("No se pudo copiar", 1.5, ctx);
                     } else if paste {
                         win::paste_into_previous(ctx);
                     } else {
-                        self.flash("Copiado", ctx);
+                        self.flash("Copiado", 1.5, ctx);
                     }
+                }
+                Action::ImportPasteBar => {
+                    let result = crate::import::import_pastebar(&mut self.state.lock().unwrap());
+                    let msg = match result {
+                        Ok(s) if s.boards + s.clips == 0 => {
+                            "PasteBar: nada nuevo que importar".to_owned()
+                        }
+                        Ok(s) => format!(
+                            "Importados {} tableros y {} clips{}",
+                            s.boards,
+                            s.clips,
+                            if s.skipped > 0 {
+                                format!(" ({} omitidos)", s.skipped)
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        Err(e) => e,
+                    };
+                    self.flash(&msg, 5.0, ctx);
                 }
                 Action::Hide => win::hide(ctx),
                 Action::Quit => {
                     self.quitting = true;
-                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                    win::quit();
                 }
                 other => {
                     let mut st = self.state.lock().unwrap();
@@ -604,7 +638,9 @@ impl PegaApp {
                                 .collect();
                             st.save_clip(None, board_id, &name, &text);
                         }
-                        Action::AddBoard(name) => st.add_board(&name),
+                        Action::AddBoard(name) => {
+                            st.add_board(&name);
+                        }
                         Action::RenameBoard(id, name) => st.rename_board(id, &name),
                         Action::DeleteBoard(id) => st.delete_board(id),
                         Action::SaveClip {
@@ -614,15 +650,17 @@ impl PegaApp {
                             text,
                         } => st.save_clip(id, board_id, &name, &text),
                         Action::DeleteClip(id) => st.delete_clip(id),
-                        Action::Copy { .. } | Action::Hide | Action::Quit => unreachable!(),
+                        Action::Copy { .. }
+                        | Action::ImportPasteBar
+                        | Action::Hide
+                        | Action::Quit => unreachable!(),
                     }
                 }
             }
         }
     }
 
-    fn flash(&mut self, msg: &str, ctx: &egui::Context) {
-        let secs = 1.5;
+    fn flash(&mut self, msg: &str, secs: f64, ctx: &egui::Context) {
         self.flash = Some((msg.to_owned(), ctx.input(|i| i.time) + secs));
         // Un repintado más para que el aviso desaparezca solo.
         ctx.request_repaint_after(Duration::from_secs_f64(secs + 0.05));

@@ -2,8 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod autostart;
 mod crypto;
 mod image;
+mod import;
 mod state;
 mod store;
 mod win;
@@ -19,11 +21,22 @@ fn data_dir() -> PathBuf {
         .join("Pega")
 }
 
+/// Ícono de la ventana y la barra de tareas (el del .exe lo pone pega.rc).
+fn window_icon() -> Arc<egui::IconData> {
+    let img = image::decode_png(include_bytes!("../assets/pega-64.png")).expect("ícono");
+    Arc::new(egui::IconData {
+        rgba: img.pixels,
+        width: img.width,
+        height: img.height,
+    })
+}
+
 fn main() {
     if win::already_running() {
         win::signal_existing();
         return;
     }
+    autostart::refresh();
     let dir = data_dir();
     std::fs::create_dir_all(&dir).expect("no se pudo crear %APPDATA%\\Pega");
     let store =
@@ -41,6 +54,7 @@ fn main() {
             .with_title(win::WINDOW_TITLE)
             .with_inner_size([880.0, 540.0])
             .with_min_inner_size([520.0, 320.0])
+            .with_icon(window_icon())
             .with_always_on_top()
             .with_visible(!hidden),
     );

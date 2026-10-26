@@ -331,14 +331,14 @@ impl State {
         self.report(r);
     }
 
-    pub fn add_board(&mut self, name: &str) {
+    pub fn add_board(&mut self, name: &str) -> Option<i64> {
         let r = self.store.add_board(name, self.boards.len() as i64);
-        if let Some(id) = self.report(r) {
-            self.boards.push(Board {
-                id,
-                name: name.to_owned(),
-            });
-        }
+        let id = self.report(r)?;
+        self.boards.push(Board {
+            id,
+            name: name.to_owned(),
+        });
+        Some(id)
     }
 
     pub fn rename_board(&mut self, id: i64, name: &str) {

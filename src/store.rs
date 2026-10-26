@@ -37,6 +37,8 @@ impl Store {
         conn.execute_batch(
             "PRAGMA auto_vacuum = INCREMENTAL;
              PRAGMA journal_mode = WAL;
+             PRAGMA journal_size_limit = 1048576;
+             PRAGMA wal_checkpoint(TRUNCATE);
              PRAGMA synchronous = NORMAL;
              PRAGMA foreign_keys = ON;
              PRAGMA secure_delete = ON;

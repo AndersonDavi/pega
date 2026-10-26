@@ -1,6 +1,7 @@
 //! Todo lo que habla con Win32: escuchar el portapapeles por eventos (sin sondeo),
 //! el atajo global, leer/escribir texto y simular Ctrl+V en la ventana anterior.
 
+use crate::autostart;
 use crate::image::{self, Rgba};
 use crate::state::{self, MAX_TEXT_BYTES, State};
 use egui::ViewportCommand;
@@ -25,11 +26,18 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL,
     MOD_NOREPEAT, RegisterHotKey, SendInput, VK_CONTROL,
 };
+use windows_sys::Win32::UI::Shell::{
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumThreadWindows, FindWindowExW,
-    GetForegroundWindow, GetMessageW, GetWindowTextW, HWND_MESSAGE, IsWindow, IsWindowVisible, MSG,
-    PostMessageW, RegisterClassW, SW_SHOW, SetForegroundWindow, ShowWindow, TranslateMessage,
-    WM_APP, WM_CLIPBOARDUPDATE, WM_HOTKEY, WNDCLASSW,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
+    EnumThreadWindows, FindWindowW, GetCursorPos, GetForegroundWindow, GetMessageW,
+    GetSystemMetrics, GetWindowTextW, IMAGE_ICON, IsWindow, IsWindowVisible, LR_DEFAULTCOLOR,
+    LoadImageW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, RegisterClassW,
+    RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOW, SetForegroundWindow, ShowWindow,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP,
+    WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 pub const HOTKEY_LABEL: &str = "Ctrl+Alt+V";
@@ -40,12 +48,21 @@ const CF_DIB: u32 = 8;
 const HOTKEY_ID: i32 = 1;
 /// Otra instancia de Pega pide que esta se muestre.
 const WM_SHOW: u32 = WM_APP + 1;
+/// Clics sobre el ícono de la bandeja.
+const WM_TRAY: u32 = WM_APP + 2;
 const CLASS: &str = "PegaListener";
+const TRAY_ID: u32 = 1;
+const MENU_OPEN: usize = 1;
+const MENU_AUTOSTART: usize = 2;
+const MENU_QUIT: usize = 3;
 
 /// Ventana de egui.
 static APP_HWND: AtomicIsize = AtomicIsize::new(0);
-/// Ventana oculta (solo mensajes) que escucha el portapapeles y el atajo.
+/// Ventana oculta que escucha el portapapeles, el atajo y la bandeja. Es de nivel superior
+/// (nunca se muestra) y no "solo mensajes", para recibir TaskbarCreated si explorer se reinicia.
 static LISTENER_HWND: AtomicIsize = AtomicIsize::new(0);
+static TRAY_OK: AtomicBool = AtomicBool::new(false);
+static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Ventana que tenía el foco antes de abrir Pega: ahí se pega.
 static PREV_FG: AtomicIsize = AtomicIsize::new(0);
 /// La ventana se acaba de mostrar: la interfaz enfoca la búsqueda.
@@ -80,12 +97,7 @@ pub fn already_running() -> bool {
 /// Le pide a la instancia que ya corre que se muestre.
 pub fn signal_existing() {
     unsafe {
-        let hwnd = FindWindowExW(
-            HWND_MESSAGE,
-            ptr::null_mut(),
-            wide(CLASS).as_ptr(),
-            ptr::null(),
-        );
+        let hwnd = FindWindowW(wide(CLASS).as_ptr(), ptr::null());
         if !hwnd.is_null() {
             PostMessageW(hwnd, WM_SHOW, 0, 0);
         }
@@ -134,20 +146,25 @@ unsafe fn run() {
         wc.lpszClassName = class.as_ptr();
         RegisterClassW(&wc);
         let hwnd = CreateWindowExW(
-            0,
+            WS_EX_TOOLWINDOW,
             class.as_ptr(),
-            ptr::null(),
+            class.as_ptr(),
+            WS_POPUP,
             0,
             0,
             0,
             0,
-            0,
-            HWND_MESSAGE,
+            ptr::null_mut(),
             ptr::null_mut(),
             hinstance,
             ptr::null(),
         );
         LISTENER_HWND.store(hwnd as isize, Relaxed);
+        TASKBAR_CREATED.store(
+            RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
+            Relaxed,
+        );
+        add_tray(hwnd);
         AddClipboardFormatListener(hwnd);
         let hotkey_ok = RegisterHotKey(
             hwnd,
@@ -191,8 +208,107 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             unsafe { show(&shared.ctx) };
             0
         }
+        WM_TRAY => {
+            match lparam as u32 {
+                WM_LBUTTONUP => unsafe { show(&shared.ctx) },
+                WM_RBUTTONUP => unsafe { tray_menu(hwnd, &shared.ctx) },
+                _ => {}
+            }
+            0
+        }
+        // Explorer se reinició: la bandeja es nueva y hay que volver a poner el ícono.
+        m if m != 0 && m == TASKBAR_CREATED.load(Relaxed) => {
+            unsafe { add_tray(hwnd) };
+            0
+        }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
+}
+
+fn tray_data(hwnd: HWND) -> NOTIFYICONDATAW {
+    let mut nid: NOTIFYICONDATAW = unsafe { mem::zeroed() };
+    nid.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd;
+    nid.uID = TRAY_ID;
+    nid
+}
+
+unsafe fn add_tray(hwnd: HWND) {
+    unsafe {
+        let mut nid = tray_data(hwnd);
+        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        nid.uCallbackMessage = WM_TRAY;
+        // Ícono 1 del .exe (pega.rc), al tamaño chico del sistema para que no se vea borroso.
+        nid.hIcon = LoadImageW(
+            GetModuleHandleW(ptr::null()),
+            1 as *const u16,
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+            LR_DEFAULTCOLOR,
+        );
+        let tip: Vec<u16> = format!("Pega — {HOTKEY_LABEL}").encode_utf16().collect();
+        nid.szTip[..tip.len()].copy_from_slice(&tip);
+        TRAY_OK.store(Shell_NotifyIconW(NIM_ADD, &nid) != 0, Relaxed);
+    }
+}
+
+unsafe fn tray_menu(hwnd: HWND, ctx: &egui::Context) {
+    unsafe {
+        let menu = CreatePopupMenu();
+        let autostart_flag = if autostart::is_enabled() {
+            MF_CHECKED
+        } else {
+            0
+        };
+        let open = wide(&format!("Abrir Pega\t{HOTKEY_LABEL}"));
+        AppendMenuW(menu, MF_STRING, MENU_OPEN, open.as_ptr());
+        AppendMenuW(
+            menu,
+            MF_STRING | autostart_flag,
+            MENU_AUTOSTART,
+            wide("Iniciar con Windows").as_ptr(),
+        );
+        AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
+        AppendMenuW(menu, MF_STRING, MENU_QUIT, wide("Salir").as_ptr());
+        let mut pt = mem::zeroed();
+        GetCursorPos(&mut pt);
+        // Sin esto el menú no se cierra al hacer clic fuera (comportamiento documentado de Windows).
+        SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+            pt.x,
+            pt.y,
+            0,
+            hwnd,
+            ptr::null(),
+        ) as usize;
+        PostMessageW(hwnd, WM_NULL, 0, 0);
+        DestroyMenu(menu);
+        match cmd {
+            MENU_OPEN => show(ctx),
+            MENU_AUTOSTART => {
+                autostart::set(!autostart::is_enabled());
+            }
+            MENU_QUIT => quit(),
+            _ => {}
+        }
+    }
+}
+
+/// Hay forma de volver a abrir la ventana si se oculta.
+pub fn can_reopen(hotkey_ok: bool) -> bool {
+    hotkey_ok || TRAY_OK.load(Relaxed)
+}
+
+/// Quita el ícono de la bandeja y termina. SQLite en WAL no pierde nada ya escrito.
+pub fn quit() -> ! {
+    let hwnd = LISTENER_HWND.load(Relaxed) as HWND;
+    if !hwnd.is_null() {
+        unsafe { Shell_NotifyIconW(NIM_DELETE, &tray_data(hwnd)) };
+    }
+    std::process::exit(0)
 }
 
 unsafe fn toggle(ctx: &egui::Context) {
