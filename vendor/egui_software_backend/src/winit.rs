@@ -187,10 +187,16 @@ impl<EguiApp: App, EguiAppFactory: FnMut(Context) -> EguiApp>
             .take()
             .unwrap_or(true);
 
+        // AccessKit exige crear el adaptador antes de mostrar la ventana por primera vez:
+        // se crea invisible y create_surface la muestra si correspondía.
+        let visible = self.config.viewport_builder.visible.take().unwrap_or(true);
+        self.config.viewport_builder.visible = Some(false);
+
         let window =
             egui_winit::create_window(&self.egui_context, elwt, &self.config.viewport_builder);
 
         self.config.viewport_builder.resizable = Some(resizable);
+        self.config.viewport_builder.visible = Some(visible);
 
         let window = window
             .map_err(|ose| SoftwareBackendAppError::CreateWindowOs(Box::new(ose)))
@@ -215,13 +221,14 @@ impl<EguiApp: App, EguiAppFactory: FnMut(Context) -> EguiApp>
 {
     pub(crate) fn create_surface(
         mut self,
+        elwt: &ActiveEventLoop,
     ) -> Result<RunningEguiAppState<EguiApp, EguiAppFactory>, SoftwareBackendAppError> {
         let surface = softbuffer::Surface::new(&self.softbuffer_context, self.window.clone())
             .map_err(SoftwareBackendAppError::soft_buffer(
                 "softbuffer::Surface::new",
             ))?;
 
-        let egui_winit = egui_winit::State::new(
+        let mut egui_winit = egui_winit::State::new(
             self.egui_context.clone(),
             egui::ViewportId::ROOT,
             &self.window,
@@ -229,10 +236,17 @@ impl<EguiApp: App, EguiAppFactory: FnMut(Context) -> EguiApp>
             None,
             self.config.max_texture_side,
         );
+        // Lectores de pantalla: el adaptador queda inactivo (sin costo) hasta que uno lo pide.
+        if let Some(proxy) = ACCESSKIT_PROXY.with(|p| p.borrow_mut().take()) {
+            egui_winit.init_accesskit(elwt, &self.window, proxy);
+        }
 
         let egui_app = (self.egui_app_factory)(self.egui_context.clone());
         let fullscreen = self.config.viewport_builder.fullscreen.unwrap_or_default();
         let visible = self.config.viewport_builder.visible.unwrap_or(true);
+        if visible {
+            self.window.set_visible(true);
+        }
 
         Ok(RunningEguiAppState {
             config: self.config,
@@ -280,7 +294,21 @@ impl<EguiApp: App, EguiAppFactory: FnMut(Context) -> EguiApp>
     }
 }
 
+std::thread_local! {
+    /// Proxy del bucle de eventos para AccessKit; lo toma create_surface (hilo principal).
+    static ACCESSKIT_PROXY: std::cell::RefCell<Option<winit::event_loop::EventLoopProxy<UserEvent>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+impl From<egui_winit::accesskit_winit::Event> for UserEvent {
+    fn from(event: egui_winit::accesskit_winit::Event) -> Self {
+        Self::AccessKit(event)
+    }
+}
+
 enum UserEvent {
+    /// Un lector de pantalla pidió el árbol de accesibilidad, una acción o se desconectó.
+    AccessKit(egui_winit::accesskit_winit::Event),
     RequestRepaint {
         /// What to repaint.
         viewport_id: egui::ViewportId,
@@ -312,7 +340,7 @@ impl<EguiApp: App, InitSurface: FnMut(Context) -> EguiApp> ApplicationHandler<Us
                     el.exit();
                 }
             },
-            Self::WindowInitialized(state) => match state.create_surface() {
+            Self::WindowInitialized(state) => match state.create_surface(el) {
                 Ok(ss) => {
                     *self = Self::Running(ss);
                 }
@@ -339,6 +367,20 @@ impl<EguiApp: App, InitSurface: FnMut(Context) -> EguiApp> ApplicationHandler<Us
         }
         if let Self::Running(state) = self {
             match event {
+                UserEvent::AccessKit(event) => {
+                    use egui_winit::accesskit_winit::WindowEvent as Ak;
+                    match event.window_event {
+                        Ak::InitialTreeRequested => {
+                            state.egui_context.enable_accesskit();
+                            state.request_redraw();
+                        }
+                        Ak::ActionRequested(request) => {
+                            state.egui_winit.on_accesskit_action_request(request);
+                            state.request_redraw();
+                        }
+                        Ak::AccessibilityDeactivated => state.egui_context.disable_accesskit(),
+                    }
+                }
                 UserEvent::RequestRepaint {
                     viewport_id,
                     when,
@@ -887,6 +929,8 @@ pub struct SoftwareBackendAppConfiguration {
     /// Ancho máximo de textura que se le informa a egui. El atlas de fuentes usa todo ese
     /// ancho, así que un valor chico ahorra RAM en un renderizador por CPU.
     pub max_texture_side: Option<usize>,
+    /// Conectar AccessKit (lectores de pantalla). Apagado por defecto en Pega.
+    pub accesskit: bool,
 }
 
 impl SoftwareBackendAppConfiguration {
@@ -934,6 +978,7 @@ impl SoftwareBackendAppConfiguration {
             convert_tris_to_rects: true,
             caching: true,
             max_texture_side: None,
+            accesskit: false,
         }
     }
 
@@ -1146,6 +1191,11 @@ impl SoftwareBackendAppConfiguration {
     /// Rendering without caching is much slower and primarily intended for testing.
     ///
     /// Default is true!
+    pub const fn accesskit(mut self, on: bool) -> Self {
+        self.accesskit = on;
+        self
+    }
+
     pub const fn max_texture_side(mut self, side: Option<usize>) -> Self {
         self.max_texture_side = side;
         self
@@ -1186,6 +1236,9 @@ pub fn run_app_with_software_backend<T: App>(
     let egui_ctx = Context::default();
 
     let event_loop_proxy = event_loop.create_proxy();
+    if settings.accesskit {
+        ACCESSKIT_PROXY.with(|p| *p.borrow_mut() = Some(event_loop.create_proxy()));
+    }
     egui_ctx.set_request_repaint_callback(move |info| {
         let when = Instant::now() + info.delay;
         let cumulative_pass_nr = info.current_cumulative_pass_nr;

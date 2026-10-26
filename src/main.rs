@@ -51,6 +51,7 @@ fn main() {
             "The backup wasn't restored: {e}"
         ),
     });
+    let accessibility = loaded.settings.accessibility;
     let state = Arc::new(Mutex::new(loaded));
 
     // `--hidden` para arrancar con Windows sin mostrar la ventana.
@@ -61,6 +62,8 @@ fn main() {
         // Sin caché de primitivas: en una ventana de este tamaño los cuadros tardan lo mismo
         // y la caché retenía ~4,5 MB (un búfer rasterizado por cada cosa dibujada).
         .caching(false)
+        // Lectores de pantalla: opcional (con AccessKit activo vimos ráfagas de redibujo).
+        .accesskit(accessibility)
         .viewport_builder(
             egui::ViewportBuilder::default()
                 .with_title(win::WINDOW_TITLE)

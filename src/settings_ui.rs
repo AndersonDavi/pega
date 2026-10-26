@@ -176,6 +176,17 @@ impl SettingsWindow {
                     );
                     ui.end_row();
 
+                    ui.label(t("Accesibilidad", "Accessibility"));
+                    ui.checkbox(
+                        &mut self.draft.accessibility,
+                        t("Lectores de pantalla (Narrador, NVDA)", "Screen readers (Narrator, NVDA)"),
+                    )
+                    .on_hover_text(t(
+                        "Se aplica al reiniciar Pega. Experimental: con un lector conectado puede usar algo de CPU.",
+                        "Applies after restarting Pega. Experimental: may use some CPU while a reader is connected.",
+                    ));
+                    ui.end_row();
+
                     ui.label(t("Texto de las capturas", "Text in screenshots"));
                     ui.checkbox(&mut self.draft.ocr, t("Leer con el OCR de Windows", "Read with Windows OCR"))
                         .on_hover_text(t(

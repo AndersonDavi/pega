@@ -167,6 +167,8 @@ pub struct Settings {
     pub sensitive_apps: Vec<String>,
     /// Leer el texto de las capturas con el OCR de Windows (en un proceso aparte).
     pub ocr: bool,
+    /// Compatibilidad con lectores de pantalla (AccessKit). Se aplica al reiniciar.
+    pub accessibility: bool,
 }
 
 impl Default for Settings {
@@ -193,6 +195,7 @@ impl Default for Settings {
             expire_minutes: 5,
             sensitive_apps: Vec::new(),
             ocr: false,
+            accessibility: false,
         }
     }
 }
@@ -222,6 +225,7 @@ impl Settings {
             format!("lock_minutes={}", self.lock_minutes),
             format!("expire_minutes={}", self.expire_minutes),
             format!("ocr={}", self.ocr as u8),
+            format!("accessibility={}", self.accessibility as u8),
             format!("sensitive_apps={}", encode_list(&self.sensitive_apps)),
             format!(
                 "language={}",
@@ -274,6 +278,7 @@ impl Settings {
                 "lock_minutes" => s.lock_minutes = value.parse().unwrap_or(s.lock_minutes),
                 "expire_minutes" => s.expire_minutes = value.parse().unwrap_or(s.expire_minutes),
                 "ocr" => s.ocr = value == "1",
+                "accessibility" => s.accessibility = value == "1",
                 "sensitive_apps" => s.sensitive_apps = decode_list(value),
                 "language" => {
                     s.language = match value {
@@ -343,6 +348,7 @@ mod tests {
             expire_minutes: 3,
             sensitive_apps: vec!["banco.exe".into()],
             ocr: true,
+            accessibility: true,
         };
         assert!(Settings::decode(&s.encode()) == s);
     }
