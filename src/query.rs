@@ -121,6 +121,7 @@ mod tests {
                 hash: 0,
                 thumb_png: vec![],
                 ocr: None,
+                sensitive: None,
             }),
             app: None,
             lang,

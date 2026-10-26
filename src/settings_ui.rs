@@ -197,9 +197,25 @@ impl SettingsWindow {
                         ));
                     ui.end_row();
 
+                    ui.label("");
+                    ui.add_enabled(
+                        self.draft.ocr,
+                        egui::Checkbox::new(
+                            &mut self.draft.ocr_sensitive,
+                            t("Avisar y borrar capturas con datos sensibles", "Warn about and delete screenshots with sensitive data"),
+                        ),
+                    )
+                    .on_hover_text(t(
+                        "Si una captura muestra un número de tarjeta, una clave o token, o una de tus palabras \
+                         ocultas, te avisa y la borra sola tras los minutos de abajo (fíjala para conservarla).",
+                        "If a screenshot shows a card number, a key or token, or one of your hidden words, Pega \
+                         warns you and deletes it after the minutes below (pin it to keep it).",
+                    ));
+                    ui.end_row();
+
                     ui.label(t("Borrar solos tras", "Auto-delete after")).on_hover_text(t(
-                        "Códigos de un solo uso (4 a 6 dígitos) y lo copiado desde las apps sensibles.",
-                        "One-time codes (4 to 6 digits) and copies from sensitive apps.",
+                        "Códigos de un solo uso (4 a 6 dígitos), lo copiado desde las apps sensibles y las capturas con datos sensibles.",
+                        "One-time codes (4 to 6 digits), copies from sensitive apps and screenshots with sensitive data.",
                     ));
                     ui.horizontal(|ui| {
                         let mut never = self.draft.expire_minutes == 0;

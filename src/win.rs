@@ -37,8 +37,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_TAB,
 };
 use windows_sys::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
-    Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NIN_BALLOONUSERCLICK, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
@@ -300,7 +300,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_TRAY => {
             match lparam as u32 {
-                WM_LBUTTONUP => unsafe { show(&shared.ctx) },
+                WM_LBUTTONUP | NIN_BALLOONUSERCLICK => unsafe { show(&shared.ctx) },
                 WM_RBUTTONUP => unsafe { tray_menu(hwnd, &shared.ctx) },
                 _ => {}
             }
@@ -475,6 +475,25 @@ pub fn can_reopen(hotkey_ok: bool) -> bool {
     hotkey_ok || TRAY_OK.load(Relaxed)
 }
 
+/// Notificación de Windows desde el ícono de la bandeja (clic: abre Pega).
+fn balloon(text: &str) {
+    let hwnd = LISTENER_HWND.load(Relaxed) as HWND;
+    if hwnd.is_null() || !TRAY_OK.load(Relaxed) {
+        return;
+    }
+    let mut nid = tray_data(hwnd);
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_WARNING;
+    for (dst, src) in [
+        (&mut nid.szInfoTitle[..], WINDOW_TITLE),
+        (&mut nid.szInfo[..], text),
+    ] {
+        let w: Vec<u16> = src.encode_utf16().take(dst.len() - 1).collect();
+        dst[..w.len()].copy_from_slice(&w);
+    }
+    unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
+}
+
 pub fn remove_tray() {
     let hwnd = LISTENER_HWND.load(Relaxed) as HWND;
     if !hwnd.is_null() {
@@ -606,7 +625,14 @@ fn capture_image(state: &Mutex<State>, dib: &[u8], app: Option<String>) -> bool 
         thread::spawn(move || {
             if let Some(text) = crate::ocr::recognize(&img) {
                 if let Some(shared) = SHARED.get() {
-                    shared.state.lock().unwrap().set_ocr(id, text);
+                    let mut st = shared.state.lock().unwrap();
+                    if let Some(found) = st.set_ocr(id, text) {
+                        let message = st.sensitive_message(found);
+                        st.notice = Some(message.clone());
+                        drop(st);
+                        balloon(&message);
+                        reschedule_expiry();
+                    }
                     shared.ctx.request_repaint();
                 }
             }

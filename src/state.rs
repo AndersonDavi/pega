@@ -5,6 +5,7 @@ use crate::code::{self, Lang};
 use crate::crypto;
 use crate::i18n::t;
 use crate::image::{self, Rgba};
+use crate::mask;
 use crate::settings::Settings;
 use crate::store::{KIND_IMAGE, Name, Store};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -45,6 +46,8 @@ pub struct ImageInfo {
     pub thumb_png: Vec<u8>,
     /// Texto reconocido con OCR, si está activado.
     pub ocr: Option<String>,
+    /// Dato sensible que el OCR vio en la imagen (no se guarda: se recalcula al cargar).
+    pub sensitive: Option<mask::Found>,
 }
 
 /// Imagen ya codificada y cifrada, lista para guardarse. Se arma sin el candado
@@ -175,6 +178,7 @@ impl State {
                             hash: r.hash?,
                             thumb_png,
                             ocr,
+                            sensitive: None,
                         }),
                     });
                 }
@@ -256,6 +260,7 @@ impl State {
         };
         state.encrypt_legacy_names(&plain_boards, &plain_clips)?;
         let mut state = state;
+        state.refresh_sensitive();
         state.purge_old();
         state.purge_expired();
         Ok(state)
@@ -315,6 +320,7 @@ impl State {
         }
         crate::i18n::apply(new.language);
         self.settings = new;
+        self.refresh_sensitive();
         self.trim();
         self.purge_old();
         hotkey_changed
@@ -419,8 +425,40 @@ impl State {
         let sensitive = self
             .app_name(e.app)
             .is_some_and(|a| self.settings.is_sensitive(a));
-        (sensitive || (e.image.is_none() && is_otp(&e.text)))
+        let sensitive_capture =
+            self.settings.ocr_sensitive && e.image.as_ref().is_some_and(|i| i.sensitive.is_some());
+        (sensitive || sensitive_capture || (e.image.is_none() && is_otp(&e.text)))
             .then(|| e.used_at + minutes as i64 * 60_000)
+    }
+
+    /// Recalcula qué capturas tienen datos sensibles (al cargar y si cambian las palabras ocultas).
+    fn refresh_sensitive(&mut self) {
+        let words = &self.settings.mask_words;
+        for img in self.history.iter_mut().filter_map(|e| e.image.as_mut()) {
+            img.sensitive = img
+                .ocr
+                .as_deref()
+                .and_then(|t| mask::find_sensitive(t, words));
+        }
+    }
+
+    /// Aviso para una captura con datos sensibles.
+    pub fn sensitive_message(&self, found: mask::Found) -> String {
+        let what = match found {
+            mask::Found::Card => t("un número de tarjeta", "a card number"),
+            mask::Found::Secret => t("una clave o token", "a key or token"),
+            mask::Found::Word => t("una de tus palabras ocultas", "one of your hidden words"),
+        };
+        match self.settings.expire_minutes {
+            0 => crate::tr!(
+                "Una captura muestra {what}. Bórrala si no la necesitas.",
+                "A screenshot shows {what}. Delete it if you don't need it."
+            ),
+            m => crate::tr!(
+                "Una captura muestra {what}: se borrará sola en {m} min. Fíjala para conservarla.",
+                "A screenshot shows {what}: it will be deleted in {m} min. Pin it to keep it."
+            ),
+        }
     }
 
     /// Próximo vencimiento, para programar un único temporizador (o ninguno).
@@ -521,6 +559,7 @@ impl State {
                     hash: p.hash,
                     thumb_png: p.thumb_png,
                     ocr: None,
+                    sensitive: None,
                 }),
             },
         );
@@ -539,18 +578,18 @@ impl State {
     }
 
     /// Guarda (cifrado) el texto que el OCR leyó en una imagen y lo suma a la búsqueda.
-    pub fn set_ocr(&mut self, id: i64, text: String) {
-        let Some(enc) = crypto::protect_str(&text) else {
-            return;
-        };
+    /// Devuelve el dato sensible encontrado si hay que avisar (y la captura se borrará sola).
+    pub fn set_ocr(&mut self, id: i64, text: String) -> Option<mask::Found> {
+        let enc = crypto::protect_str(&text)?;
         let r = self.store.set_ocr(id, &enc);
         self.report(r);
-        if let Some(e) = self.history.iter_mut().find(|e| e.id == id) {
-            if let Some(img) = &mut e.image {
-                e.key = format!("{} {}", image_key(img.width, img.height), fold(&text));
-                img.ocr = Some(text);
-            }
-        }
+        let found = mask::find_sensitive(&text, &self.settings.mask_words);
+        let e = self.history.iter_mut().find(|e| e.id == id)?;
+        let img = e.image.as_mut()?;
+        e.key = format!("{} {}", image_key(img.width, img.height), fold(&text));
+        img.ocr = Some(text);
+        img.sensitive = found;
+        (self.settings.ocr_sensitive && !e.pinned).then_some(found?)
     }
 
     /// PNG completo (descifrado) de una imagen del historial.
@@ -655,6 +694,7 @@ impl State {
             hash,
             thumb_png,
             ocr: None,
+            sensitive: None,
         });
         self.history.insert(
             pos,
@@ -946,6 +986,59 @@ mod tests {
         ] {
             assert!(!is_otp(no), "{no}");
         }
+    }
+
+    fn add_capture(s: &mut State, hash: i64) -> i64 {
+        let img = Rgba {
+            width: 1,
+            height: 1,
+            pixels: vec![0, 0, 0, 255],
+        };
+        let png = image::encode_png(&img, png::Compression::Fast).unwrap();
+        assert!(s.import_image(&png, png.clone(), hash, 1, 1, now(), false, None));
+        s.history[0].id
+    }
+
+    #[test]
+    fn screenshots_with_sensitive_text_warn_and_expire() {
+        let mut s = state();
+        let card = add_capture(&mut s, 1);
+        let plain = add_capture(&mut s, 2);
+        assert_eq!(
+            s.set_ocr(card, "VISA 4111 1111 1111 1111".into()),
+            Some(mask::Found::Card)
+        );
+        assert_eq!(s.set_ocr(plain, "Error: timeout".into()), None);
+        let expiring: Vec<i64> = s
+            .history
+            .iter()
+            .filter(|e| s.expiry_of(e).is_some())
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(expiring, [card]);
+        assert!(s.sensitive_message(mask::Found::Card).contains("5 min"));
+
+        // Fijada no vence; con el ajuste apagado ni avisa ni vence.
+        s.toggle_pin(card);
+        assert!(s.next_expiry().is_none());
+        s.toggle_pin(card);
+        let mut set = s.settings.clone();
+        set.ocr_sensitive = false;
+        s.save_settings(set);
+        assert_eq!(s.set_ocr(card, "4111 1111 1111 1111".into()), None);
+        assert!(s.next_expiry().is_none());
+    }
+
+    #[test]
+    fn hidden_words_mark_screenshots_after_settings_change() {
+        let mut s = state();
+        let id = add_capture(&mut s, 3);
+        s.set_ocr(id, "Informe confidencial".into());
+        assert!(s.next_expiry().is_none());
+        let mut set = s.settings.clone();
+        set.mask_words = vec!["Confidencial".into()];
+        s.save_settings(set);
+        assert!(s.next_expiry().is_some());
     }
 
     #[test]

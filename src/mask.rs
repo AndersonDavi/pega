@@ -35,8 +35,67 @@ pub fn mask(text: &str, words: &[String], cards: bool) -> String {
     chars.into_iter().collect()
 }
 
+/// Dato sensible encontrado en un texto (por ejemplo, el que el OCR leyó en una captura).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Found {
+    Card,
+    Secret,
+    Word,
+}
+
+/// Busca un número de tarjeta, una clave o token conocido, o una de `words`.
+pub fn find_sensitive(text: &str, words: &[String]) -> Option<Found> {
+    let mut chars: Vec<char> = text.chars().collect();
+    if mask_cards(&mut chars) {
+        return Some(Found::Card);
+    }
+    if has_secret(text) {
+        return Some(Found::Secret);
+    }
+    let lower = text.to_lowercase();
+    words
+        .iter()
+        .any(|w| !w.trim().is_empty() && lower.contains(&w.to_lowercase()))
+        .then_some(Found::Word)
+}
+
+/// Claves privadas y tokens con prefijo conocido (GitHub, OpenAI/Stripe, Slack, AWS, Google).
+fn has_secret(text: &str) -> bool {
+    if text.contains("PRIVATE KEY-----") {
+        return true;
+    }
+    const PREFIXES: [&str; 8] = [
+        "ghp_",
+        "gho_",
+        "github_pat_",
+        "sk-",
+        "sk_live_",
+        "xoxb-",
+        "xoxp-",
+        "AIza",
+    ];
+    text.split(|c: char| c.is_whitespace() || "\"'`,;()[]{}<>".contains(c))
+        .any(|tok| {
+            let body = |rest: &str| {
+                rest.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            };
+            (tok.len() >= 20
+                && PREFIXES
+                    .iter()
+                    .any(|p| tok.strip_prefix(p).is_some_and(body)))
+                || (tok.len() == 20
+                    && tok.starts_with("AKIA")
+                    && tok
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        })
+}
+
 /// Secuencias de 13 a 19 dígitos (con espacios o guiones entre grupos) que pasan Luhn.
-fn mask_cards(chars: &mut [char]) {
+/// Devuelve si encontró alguna.
+fn mask_cards(chars: &mut [char]) -> bool {
+    let mut found = false;
     let mut i = 0;
     while i < chars.len() {
         if !chars[i].is_ascii_digit() {
@@ -65,9 +124,11 @@ fn mask_cards(chars: &mut [char]) {
             for &k in &digits[..digits.len() - 4] {
                 chars[k] = DOT;
             }
+            found = true;
         }
         i = end.max(start + 1);
     }
+    found
 }
 
 fn luhn(digits: impl DoubleEndedIterator<Item = char>) -> bool {
@@ -121,6 +182,42 @@ mod tests {
             "1098765432 y 3001234567"
         );
         assert_eq!(mask("4111111111111112", &[], true), "4111111111111112");
+    }
+
+    #[test]
+    fn finds_sensitive_data_in_ocr_text() {
+        let words = vec!["Confidencial".to_owned()];
+        assert_eq!(
+            find_sensitive("Total a pagar\nVISA 4111 1111 1111 1111\nVence 12/29", &[]),
+            Some(Found::Card)
+        );
+        assert_eq!(
+            find_sensitive("token: ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4", &[]),
+            Some(Found::Secret)
+        );
+        assert_eq!(
+            find_sensitive("AKIAIOSFODNN7EXAMPLE", &[]),
+            Some(Found::Secret)
+        );
+        assert_eq!(
+            find_sensitive("-----BEGIN RSA PRIVATE KEY-----", &[]),
+            Some(Found::Secret)
+        );
+        assert_eq!(
+            find_sensitive("Informe CONFIDENCIAL Q3", &words),
+            Some(Found::Word)
+        );
+    }
+
+    #[test]
+    fn ordinary_screenshots_are_not_sensitive() {
+        // Cédula, teléfono, "sk-" corto y palabras vacías en la lista: nada.
+        let words = vec!["  ".to_owned()];
+        assert_eq!(
+            find_sensitive("C.C. 1098765432 Tel 3001234567 sk-ok", &words),
+            None
+        );
+        assert_eq!(find_sensitive("Error: timeout al conectar", &[]), None);
     }
 
     #[test]
