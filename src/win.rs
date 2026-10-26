@@ -620,6 +620,14 @@ pub fn write_text(text: &str, private: bool) -> bool {
     true
 }
 
+/// Texto que hay ahora en el portapapeles (para la variable {portapapeles}).
+pub fn current_text() -> Option<String> {
+    match unsafe { read_clipboard(LISTENER_HWND.load(Relaxed) as HWND) } {
+        Some(Captured::Text(text)) => Some(text),
+        _ => None,
+    }
+}
+
 /// Pone la imagen como bitmap (lo entiende todo) y como PNG (navegadores, Office, Discord).
 pub fn write_image(img: &Rgba, png: &[u8]) -> bool {
     unsafe {

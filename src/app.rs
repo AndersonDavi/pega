@@ -13,6 +13,7 @@ use crate::query::Query;
 use crate::settings::{Settings, Theme};
 use crate::settings_ui::{Outcome, SettingsWindow};
 use crate::state::{self, State};
+use crate::template;
 use crate::tr;
 use crate::transform;
 use crate::win;
@@ -27,6 +28,8 @@ use std::time::Duration;
 enum Item {
     Text(String),
     Image(i64),
+    /// Texto de un clip de tablero: si tiene variables o campos se completa antes de copiar.
+    Template(String),
 }
 
 /// Cambios que se aplican después de dibujar, cuando ya no se está recorriendo el estado.
@@ -111,6 +114,20 @@ fn rgb(c: u32) -> egui::Color32 {
     egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 
+/// Campos de una plantilla que se piden antes de pegar.
+struct TemplateForm {
+    text: String,
+    private: bool,
+    paste: bool,
+    values: Vec<(String, String)>,
+    focus_first: bool,
+}
+
+/// Fecha, hora y el texto que hay ahora en el portapapeles.
+fn template_vars() -> template::Vars {
+    template::Vars::now(win::current_text().unwrap_or_default())
+}
+
 struct Editor {
     id: Option<i64>,
     board_id: i64,
@@ -139,6 +156,7 @@ pub struct PegaApp {
     styled: bool,
     /// Respaldo elegido, esperando confirmación para restaurar.
     confirm_restore: Option<PathBuf>,
+    template_form: Option<TemplateForm>,
 }
 
 /// Espaciado, esquinas y el azul del ícono como acento, para ambos temas.
@@ -172,6 +190,7 @@ impl PegaApp {
             lock,
             styled: false,
             confirm_restore: None,
+            template_form: None,
             state,
             query: String::new(),
             selected: 0,
@@ -309,7 +328,8 @@ impl egui_software_backend::App for PegaApp {
         }
         let hotkey = st.settings.hotkey.label();
         let masked = |t: &str| mask(t, &st.settings.mask_words, st.settings.mask_cards);
-        let modal_open = self.editor.is_some() || self.settings_window.is_some();
+        let modal_open =
+            self.editor.is_some() || self.settings_window.is_some() || self.template_form.is_some();
 
         let just_shown = win::take_shown();
         if just_shown {
@@ -793,13 +813,13 @@ impl egui_software_backend::App for PegaApp {
                                 }
                                 if resp.double_clicked() {
                                     actions.push(Action::Copy {
-                                        item: Item::Text(c.text.clone()),
+                                        item: Item::Template(c.text.clone()),
                                         private: true,
                                         paste: true,
                                     });
                                 } else if resp.clicked() {
                                     actions.push(Action::Copy {
-                                        item: Item::Text(c.text.clone()),
+                                        item: Item::Template(c.text.clone()),
                                         private: true,
                                         paste: false,
                                     });
@@ -873,6 +893,10 @@ impl egui_software_backend::App for PegaApp {
                         .desired_width(360.0)
                         .desired_rows(6),
                 );
+                ui.weak(t(
+                    "Variables: {fecha} {fecha_iso} {hora} {portapapeles} {campo:Nombre}",
+                    "Variables: {date} {date_iso} {time} {clipboard} {field:Name}",
+                ));
                 ui.horizontal(|ui| {
                     let valid = !ed.name.trim().is_empty() && !ed.text.is_empty();
                     if ui
@@ -894,6 +918,55 @@ impl egui_software_backend::App for PegaApp {
             });
             if done || !open {
                 self.editor = None;
+            }
+        }
+
+        if let Some(form) = &mut self.template_form {
+            let mut close = false;
+            let mut submit = false;
+            egui::Window::new(t("Completar plantilla", "Fill in template"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(&ctx, |ui| {
+                    egui::Grid::new("campos")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            for (i, (name, value)) in form.values.iter_mut().enumerate() {
+                                ui.label(name.as_str());
+                                let r =
+                                    ui.add(egui::TextEdit::singleline(value).desired_width(260.0));
+                                if i == 0 && form.focus_first {
+                                    r.request_focus();
+                                    form.focus_first = false;
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    let (enter, esc) =
+                        ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+                    ui.horizontal(|ui| {
+                        let label = if form.paste {
+                            t("Pegar", "Paste")
+                        } else {
+                            t("Copiar", "Copy")
+                        };
+                        submit = ui.button(label).clicked() || enter;
+                        close = ui.button(t("Cancelar", "Cancel")).clicked() || esc;
+                    });
+                });
+            if submit {
+                let values: HashMap<String, String> = form.values.iter().cloned().collect();
+                actions.push(Action::Copy {
+                    item: Item::Text(template::render(&form.text, &template_vars(), &values)),
+                    private: form.private,
+                    paste: form.paste,
+                });
+                close = true;
+            }
+            if close {
+                self.template_form = None;
             }
         }
 
@@ -964,9 +1037,35 @@ impl PegaApp {
                     private,
                     paste,
                 } => {
+                    let item = match item {
+                        Item::Template(text) if template::is_template(&text) => {
+                            let fields = template::fields(&text);
+                            if fields.is_empty() {
+                                Item::Text(template::render(
+                                    &text,
+                                    &template_vars(),
+                                    &HashMap::new(),
+                                ))
+                            } else {
+                                // Hay campos que pedir: se pega al completar el formulario.
+                                self.template_form = Some(TemplateForm {
+                                    text,
+                                    private,
+                                    paste,
+                                    values: fields
+                                        .into_iter()
+                                        .map(|f| (f, String::new()))
+                                        .collect(),
+                                    focus_first: true,
+                                });
+                                continue;
+                            }
+                        }
+                        other => other,
+                    };
                     // El portapapeles va sin el candado: el hilo Win32 lo toma al ver el cambio.
                     let ok = match item {
-                        Item::Text(text) => win::write_text(&text, private),
+                        Item::Text(text) | Item::Template(text) => win::write_text(&text, private),
                         Item::Image(id) => {
                             let loaded = self.state.lock().unwrap().image_for_paste(id);
                             loaded.is_some_and(|(img, png)| win::write_image(&img, &png))

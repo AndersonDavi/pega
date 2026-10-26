@@ -16,6 +16,7 @@ mod settings;
 mod settings_ui;
 mod state;
 mod store;
+mod template;
 mod transform;
 mod win;
 
