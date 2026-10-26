@@ -1210,11 +1210,19 @@ impl egui_software_backend::App for PegaApp {
                     "Contenido (se guarda cifrado)",
                     "Content (stored encrypted)",
                 ));
-                ui.add(
-                    egui::TextEdit::multiline(&mut ed.text)
-                        .desired_width(360.0)
-                        .desired_rows(6),
-                );
+                // Un clip largo se desplaza dentro del cuadro en vez de estirar la ventana
+                // más allá de la pantalla (los botones quedaban fuera).
+                let max_h = (ctx.content_rect().height() - 220.0).max(80.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("clip_text")
+                    .max_height(max_h)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut ed.text)
+                                .desired_width(360.0)
+                                .desired_rows(6),
+                        );
+                    });
                 ui.weak(t(
                     "Variables: {fecha} {fecha_iso} {hora} {portapapeles} {campo:Nombre}",
                     "Variables: {date} {date_iso} {time} {clipboard} {field:Name}",
@@ -1463,20 +1471,27 @@ impl egui_software_backend::App for PegaApp {
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(&ctx, |ui| {
-                    egui::Grid::new("campos")
-                        .num_columns(2)
-                        .spacing([12.0, 8.0])
+                    // Muchos campos: se desplazan y Pegar/Cancelar siguen a la vista.
+                    let max_h = (ctx.content_rect().height() - 140.0).max(80.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(max_h)
                         .show(ui, |ui| {
-                            for (i, (name, value)) in form.values.iter_mut().enumerate() {
-                                ui.label(name.as_str());
-                                let r =
-                                    ui.add(egui::TextEdit::singleline(value).desired_width(260.0));
-                                if i == 0 && form.focus_first {
-                                    r.request_focus();
-                                    form.focus_first = false;
-                                }
-                                ui.end_row();
-                            }
+                            egui::Grid::new("campos")
+                                .num_columns(2)
+                                .spacing([12.0, 8.0])
+                                .show(ui, |ui| {
+                                    for (i, (name, value)) in form.values.iter_mut().enumerate() {
+                                        ui.label(name.as_str());
+                                        let r = ui.add(
+                                            egui::TextEdit::singleline(value).desired_width(260.0),
+                                        );
+                                        if i == 0 && form.focus_first {
+                                            r.request_focus();
+                                            form.focus_first = false;
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
                         });
                     let (enter, esc) =
                         ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));

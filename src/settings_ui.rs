@@ -68,6 +68,10 @@ impl SettingsWindow {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
+                // Con la ventana chica el contenido se desplaza: el título y Guardar/Cancelar
+                // siempre quedan a la vista (antes se cortaban arriba y abajo).
+                let max_h = (ctx.content_rect().height() - 140.0).max(120.0);
+                egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
                 egui::Grid::new("ajustes")
                     .num_columns(2)
                     .spacing([16.0, 10.0])
@@ -274,6 +278,7 @@ impl SettingsWindow {
                         });
                         ui.end_row();
                     }
+                });
                 });
                 if let Some(w) = &self.warning {
                     ui.colored_label(ui.visuals().warn_fg_color, w);

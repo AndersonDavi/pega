@@ -536,7 +536,12 @@ mod tests {
             &mut s,
         )
         .unwrap();
-        assert!(out.text.contains("reemplazado"), "{}", out.text);
+        // El idioma sale del de Windows (en GitHub, inglés).
+        assert!(
+            out.text.contains("reemplazado") || out.text.contains("replaced"),
+            "{}",
+            out.text
+        );
         assert_eq!(
             run(&Command::ShowClip("tel".into()), &mut s).unwrap().text,
             "301"
