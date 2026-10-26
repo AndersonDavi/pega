@@ -1,0 +1,28 @@
+﻿# Copia de egui_software_backend 0.0.3 (MIT OR Apache-2.0, DGriffin91) con ajustes de
+# memoria para Pega: tamaño del atlas configurable y búferes liberados al ocultar.
+[package]
+name = "egui_software_backend"
+description = "A CPU software render backend for egui."
+version = "0.0.3"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/DGriffin91/egui_software_backend"
+
+[dependencies]
+egui = { version = "0.34", default-features = false }
+strength_reduce = "0.2.4"
+constify = "0.0.1"
+winit = { version = "0.30", optional = true }
+softbuffer = { version = "0.4", optional = true }
+egui-winit = { version = "0.34", default-features = false, optional = true }
+bytemuck = { version = "1.25", optional = true }
+
+[features]
+default = ["std", "winit"]
+std = []
+winit = ["dep:winit", "softbuffer", "egui-winit", "bytemuck"]
+# Sin uso en Pega; declaradas para que los cfg del código original no avisen.
+log = []
+rayon = []
+raster_stats = ["std"]
+test_render = []

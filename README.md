@@ -7,7 +7,8 @@ pero en un solo proceso sin navegador embebido.
 
 | | PasteBar 0.6.2 | Pega |
 |---|---|---|
-| RAM privada en reposo | ~340 MB (7 procesos) | ~11 MB (1 proceso) |
+| RAM privada, oculto en la bandeja | ~340 MB (7 procesos) | ~3-5 MB (1 proceso) |
+| RAM privada, ventana abierta | ~340 MB | ~7 MB |
 | Ejecutable | 53 MB | ~6 MB |
 | Datos en disco | SQLite en texto plano | SQLite cifrado con DPAPI |
 
@@ -65,6 +66,9 @@ El ejecutable queda en `%TEMP%\pega-target\release\pega.exe` (se puede cambiar c
 - `src/app.rs`: interfaz con [egui](https://github.com/emilk/egui), dibujada por CPU con
   [egui_software_backend](https://github.com/DGriffin91/egui_software_backend). Con OpenGL o Direct3D
   el driver de la tarjeta de video se carga dentro del proceso y la RAM sube a 120–350 MB.
+- `vendor/egui_software_backend`: copia de ese backend (MIT/Apache) con arreglos: repintados
+  diferidos que se respetan (antes el cursor provocaba cientos de cuadros por segundo), cerrar la
+  ventana avisa a la app, y el búfer de la ventana se suelta al ocultarla.
 
 ## Licencia
 

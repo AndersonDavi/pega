@@ -24,9 +24,10 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{
     GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
+use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, GetCurrentProcessId, GetCurrentThreadId, OpenProcess, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    CreateMutexW, GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, OpenProcess,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL,
@@ -75,6 +76,8 @@ static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomic
 static PREV_FG: AtomicIsize = AtomicIsize::new(0);
 /// La ventana se acaba de mostrar: la interfaz enfoca la búsqueda.
 static SHOWN: AtomicBool = AtomicBool::new(false);
+/// La ventana se está ocultando: la interfaz suelta lo que no necesita mientras no se ve.
+static HIDING: AtomicBool = AtomicBool::new(false);
 
 struct Shared {
     state: Arc<Mutex<State>>,
@@ -92,6 +95,19 @@ fn format_id(name: &str) -> u32 {
 
 pub fn take_shown() -> bool {
     SHOWN.swap(false, Relaxed)
+}
+
+pub fn take_hiding() -> bool {
+    HIDING.swap(false, Relaxed)
+}
+
+/// Con la ventana ya oculta, devuelve a Windows las páginas de RAM física que no se usan.
+/// Al volver a mostrarla se recuperan las que hagan falta (unos milisegundos).
+pub fn trim_memory() {
+    thread::spawn(|| {
+        thread::sleep(Duration::from_millis(300));
+        unsafe { K32EmptyWorkingSet(GetCurrentProcess()) };
+    });
 }
 
 /// true si ya hay otra instancia corriendo (el mutex vive hasta que el proceso termina).
@@ -380,12 +396,16 @@ pub fn can_reopen(hotkey_ok: bool) -> bool {
     hotkey_ok || TRAY_OK.load(Relaxed)
 }
 
-/// Quita el ícono de la bandeja y termina. SQLite en WAL no pierde nada ya escrito.
-pub fn quit() -> ! {
+pub fn remove_tray() {
     let hwnd = LISTENER_HWND.load(Relaxed) as HWND;
     if !hwnd.is_null() {
         unsafe { Shell_NotifyIconW(NIM_DELETE, &tray_data(hwnd)) };
     }
+}
+
+/// Quita el ícono de la bandeja y termina. SQLite en WAL no pierde nada ya escrito.
+pub fn quit() -> ! {
+    remove_tray();
     std::process::exit(0)
 }
 
@@ -418,6 +438,7 @@ unsafe fn show(ctx: &egui::Context) {
 }
 
 pub fn hide(ctx: &egui::Context) {
+    HIDING.store(true, Relaxed);
     ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     ctx.request_repaint();
 }

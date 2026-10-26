@@ -135,6 +135,8 @@ fn apply_style(ctx: &egui::Context) {
         }
         s.visuals.selection.bg_fill = egui::Color32::from_rgb(0x25, 0x63, 0xEB);
         s.visuals.selection.stroke.color = egui::Color32::WHITE;
+        // Cursor fijo: el parpadeo obligaba a redibujar ~4 veces por segundo con la ventana abierta.
+        s.visuals.text_cursor.blink = false;
     });
 }
 
@@ -912,6 +914,16 @@ impl egui_software_backend::App for PegaApp {
         drop(hist);
         drop(st);
         self.apply(&ctx, actions);
+        // Ocultándose: las miniaturas se sueltan (egui libera sus texturas en este mismo
+        // cuadro) y se devuelve la RAM física. Al volver se recrean las que se vean.
+        if win::take_hiding() {
+            self.thumbs.clear();
+            win::trim_memory();
+        }
+    }
+
+    fn on_exit(&mut self, _ctx: &egui::Context) {
+        win::remove_tray();
     }
 }
 

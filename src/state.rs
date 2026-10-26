@@ -551,7 +551,7 @@ impl State {
         }
     }
 
-    /// Pone el tablero id antes de efore (o al final si es None).
+    /// Pone el tablero `id` antes de `before` (o al final si es `None`).
     pub fn move_board(&mut self, id: i64, before: Option<i64>) {
         if Some(id) == before {
             return;
@@ -574,7 +574,7 @@ impl State {
         self.report(r);
     }
 
-    /// Mueve el clip id al tablero oard_id, antes de efore (o al final).
+    /// Mueve el clip `id` al tablero `board_id`, antes de `before` (o al final).
     pub fn move_clip(&mut self, id: i64, board_id: i64, before: Option<i64>) {
         if Some(id) == before {
             return;
@@ -584,7 +584,7 @@ impl State {
         };
         let mut clip = self.clips.remove(from);
         clip.board_id = board_id;
-        // Posición en el vector: antes de efore, o después del último clip del tablero.
+        // Posición en el vector: antes de `before`, o después del último clip del tablero.
         let to = match before.and_then(|b| self.clips.iter().position(|c| c.id == b)) {
             Some(i) => i,
             None => self
