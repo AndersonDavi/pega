@@ -3,6 +3,7 @@
 
 mod app;
 mod autostart;
+mod code;
 mod crypto;
 mod image;
 mod import;

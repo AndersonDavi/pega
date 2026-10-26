@@ -1,6 +1,7 @@
 //! Estado en memoria (descifrado) + escritura cifrada a SQLite.
 //! Lo comparten la interfaz y el hilo del portapapeles detrás de un Mutex.
 
+use crate::code::{self, Lang};
 use crate::crypto;
 use crate::image::{self, Rgba};
 use crate::settings::Settings;
@@ -21,6 +22,18 @@ pub struct Entry {
     pub image: Option<ImageInfo>,
     /// App de la que vino la copia (id en State::apps).
     pub app: Option<i64>,
+    /// Lenguaje de programación detectado, si parece código.
+    pub lang: Option<Lang>,
+}
+
+/// Clave de búsqueda de un texto: sin tildes ni mayúsculas, más el lenguaje ("json").
+fn text_key(text: &str, lang: Option<Lang>) -> String {
+    let mut key = fold(text);
+    if let Some(l) = lang {
+        key.push(' ');
+        key.push_str(l.name());
+    }
+    key
 }
 
 pub struct ImageInfo {
@@ -133,6 +146,7 @@ impl State {
                         used_at: r.used_at,
                         pinned: r.pinned,
                         app: r.app_id,
+                        lang: None,
                         image: Some(ImageInfo {
                             width: r.width,
                             height: r.height,
@@ -142,9 +156,11 @@ impl State {
                     });
                 }
                 let text = crypto::unprotect_str(r.data.as_deref()?)?;
+                let lang = code::detect(&text);
                 Some(Entry {
                     id: r.id,
-                    key: fold(&text),
+                    key: text_key(&text, lang),
+                    lang,
                     text,
                     used_at: r.used_at,
                     pinned: r.pinned,
@@ -277,11 +293,13 @@ impl State {
         let Some(id) = self.report(r) else {
             return false;
         };
+        let lang = code::detect(&text);
         self.history.insert(
             0,
             Entry {
                 id,
-                key: fold(&text),
+                key: text_key(&text, lang),
+                lang,
                 text,
                 used_at,
                 pinned: false,
@@ -400,6 +418,7 @@ impl State {
                 used_at,
                 pinned: false,
                 app,
+                lang: None,
                 image: Some(ImageInfo {
                     width: p.width,
                     height: p.height,

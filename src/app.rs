@@ -3,6 +3,7 @@
 //!
 //! Clic = copiar (la ventana sigue abierta). Doble clic o Enter = pegar en la app anterior.
 
+use crate::code;
 use crate::image;
 use crate::lock::Lock;
 use crate::mask::mask;
@@ -136,12 +137,17 @@ fn preview(text: &str) -> String {
     out
 }
 
-/// Texto del tooltip: de dónde y cuándo vino, y el contenido (recortado).
-fn tooltip(text: &str, app: Option<&str>, used_at: i64) -> String {
-    let mut t = match app {
+/// "Desde chrome.exe · hace 5 min".
+fn origin(app: Option<&str>, used_at: i64) -> String {
+    match app {
         Some(app) => format!("Desde {app} · {}", ago(used_at)),
         None => ago(used_at),
-    };
+    }
+}
+
+/// Texto del tooltip: de dónde y cuándo vino, y el contenido (recortado).
+fn tooltip(text: &str, app: Option<&str>, used_at: i64) -> String {
+    let mut t = origin(app, used_at);
     if !text.is_empty() {
         t.push_str("\n\n");
         t.extend(text.chars().take(600));
@@ -382,9 +388,14 @@ impl egui_software_backend::App for PegaApp {
                                 let selected = i == self.selected;
                                 let pin = if e.pinned { "📌 " } else { "" };
                                 let app = st.app_name(e.app);
-                                let right = egui::RichText::new(app.map(short_app).unwrap_or(""))
-                                    .small()
-                                    .weak();
+                                // "rust · chrome": lenguaje y app de origen.
+                                let tags: Vec<&str> = e
+                                    .lang
+                                    .map(code::Lang::name)
+                                    .into_iter()
+                                    .chain(app.map(short_app))
+                                    .collect();
+                                let right = egui::RichText::new(tags.join(" · ")).small().weak();
                                 let resp = match &e.image {
                                     Some(img) => {
                                         let label =
@@ -412,11 +423,24 @@ impl egui_software_backend::App for PegaApp {
                                         .min_size(egui::vec2(0.0, row_h)),
                                     ),
                                 }
-                                .on_hover_text(tooltip(
-                                    &masked(&e.text),
-                                    app,
-                                    e.used_at,
-                                ));
+                                .on_hover_ui(|ui| {
+                                    let text = masked(&e.text);
+                                    match e.lang {
+                                        Some(lang) => {
+                                            ui.label(
+                                                egui::RichText::new(origin(app, e.used_at)).weak(),
+                                            );
+                                            ui.label(code::highlight(
+                                                &text,
+                                                lang,
+                                                ui.visuals().dark_mode,
+                                            ));
+                                        }
+                                        None => {
+                                            ui.label(tooltip(&text, app, e.used_at));
+                                        }
+                                    }
+                                });
                                 if scroll_to == Some(i) {
                                     resp.scroll_to_me(None);
                                 }
