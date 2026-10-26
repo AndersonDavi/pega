@@ -5,6 +5,7 @@
 
 use crate::backup;
 use crate::code;
+use crate::export;
 use crate::i18n::t;
 use crate::image;
 use crate::lock::Lock;
@@ -74,6 +75,10 @@ enum Action {
     Lock,
     PasteSequence(Vec<(String, bool)>),
     ShowQr(String),
+    StartExport,
+    StartImport,
+    Export(String),
+    Import(PathBuf, String),
     Backup,
     PickRestore,
     Restore(PathBuf),
@@ -159,6 +164,24 @@ fn rgb(c: u32) -> egui::Color32 {
     egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 
+/// Contraseña para exportar (con confirmación) o para abrir una exportación (`import`).
+#[derive(Default)]
+struct PasswordDialog {
+    import: Option<PathBuf>,
+    pass: String,
+    confirm: String,
+    error: Option<String>,
+    focus: bool,
+}
+
+#[allow(non_snake_case)]
+fn EXPORT_FILTER() -> &'static str {
+    t(
+        "Exportación de Pega (*.pega)\0*.pega\0Todos los archivos\0*.*\0\0",
+        "Pega export (*.pega)\0*.pega\0All files\0*.*\0\0",
+    )
+}
+
 /// Campos de una plantilla que se piden antes de pegar.
 struct TemplateForm {
     text: String,
@@ -206,6 +229,7 @@ pub struct PegaApp {
     multi: Vec<(Sel, String, bool)>,
     /// QR abierto; la textura se suelta al cerrarlo.
     qr: Option<egui::TextureHandle>,
+    password: Option<PasswordDialog>,
 }
 
 /// Espaciado, esquinas y el azul del ícono como acento, para ambos temas.
@@ -242,6 +266,7 @@ impl PegaApp {
             template_form: None,
             multi: Vec::new(),
             qr: None,
+            password: None,
             state,
             query: String::new(),
             selected: 0,
@@ -382,7 +407,8 @@ impl egui_software_backend::App for PegaApp {
         let modal_open = self.editor.is_some()
             || self.settings_window.is_some()
             || self.template_form.is_some()
-            || self.qr.is_some();
+            || self.qr.is_some()
+            || self.password.is_some();
 
         let just_shown = win::take_shown();
         if just_shown {
@@ -494,6 +520,19 @@ impl egui_software_backend::App for PegaApp {
                         .clicked()
                     {
                         actions.push(Action::PickRestore);
+                    }
+                    if ui
+                        .button(t("Exportar con contraseña…", "Export with password…"))
+                        .on_hover_text(t(
+                            "Para otro PC u otro usuario: el respaldo normal solo sirve con tu usuario de Windows.",
+                            "For another PC or user: normal backups only work with your Windows user.",
+                        ))
+                        .clicked()
+                    {
+                        actions.push(Action::StartExport);
+                    }
+                    if ui.button(t("Importar exportación…", "Import export…")).clicked() {
+                        actions.push(Action::StartImport);
                     }
                     if ui.button(t("Ajustes…", "Settings…")).clicked() {
                         self.settings_window = Some(SettingsWindow::new(&st.settings));
@@ -1093,6 +1132,93 @@ impl egui_software_backend::App for PegaApp {
             }
         }
 
+        if let Some(dlg) = &mut self.password {
+            let mut close = false;
+            let title = match dlg.import {
+                None => t("Exportar con contraseña", "Export with password"),
+                Some(_) => t("Contraseña de la exportación", "Export password"),
+            };
+            egui::Window::new(title)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(&ctx, |ui| {
+                    let first = ui.add(
+                        egui::TextEdit::singleline(&mut dlg.pass)
+                            .password(true)
+                            .hint_text(t("Contraseña (mín. 8)", "Password (min. 8)"))
+                            .desired_width(260.0),
+                    );
+                    if dlg.focus {
+                        first.request_focus();
+                        dlg.focus = false;
+                    }
+                    if dlg.import.is_none() {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut dlg.confirm)
+                                .password(true)
+                                .hint_text(t("Repetir contraseña", "Repeat password"))
+                                .desired_width(260.0),
+                        );
+                        ui.weak(t(
+                            "Si la olvidas, no hay forma de recuperar la exportación.",
+                            "If you forget it, the export can't be recovered.",
+                        ));
+                    }
+                    if let Some(e) = &dlg.error {
+                        ui.colored_label(ui.visuals().error_fg_color, e);
+                    }
+                    let (enter, esc) =
+                        ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+                    ui.horizontal(|ui| {
+                        let ok_label = if dlg.import.is_some() {
+                            t("Importar", "Import")
+                        } else {
+                            t("Exportar…", "Export…")
+                        };
+                        if ui.button(ok_label).clicked() || enter {
+                            match &dlg.import {
+                                Some(path) => {
+                                    actions.push(Action::Import(
+                                        path.clone(),
+                                        std::mem::take(&mut dlg.pass),
+                                    ));
+                                    close = true;
+                                }
+                                None if dlg.pass.chars().count() < 8 => {
+                                    dlg.error = Some(
+                                        t(
+                                            "Usa al menos 8 caracteres.",
+                                            "Use at least 8 characters.",
+                                        )
+                                        .into(),
+                                    );
+                                }
+                                None if dlg.pass != dlg.confirm => {
+                                    dlg.error = Some(
+                                        t(
+                                            "Las contraseñas no coinciden.",
+                                            "Passwords don't match.",
+                                        )
+                                        .into(),
+                                    );
+                                }
+                                None => {
+                                    actions.push(Action::Export(std::mem::take(&mut dlg.pass)));
+                                    close = true;
+                                }
+                            }
+                        }
+                        if ui.button(t("Cancelar", "Cancel")).clicked() || esc {
+                            close = true;
+                        }
+                    });
+                });
+            if close {
+                self.password = None;
+            }
+        }
+
         if let Some(tex) = &self.qr {
             let mut close = false;
             egui::Window::new(t("QR para el celular", "QR for your phone"))
@@ -1310,6 +1436,78 @@ impl PegaApp {
                         self.qr = Some(ctx.load_texture("qr", img, egui::TextureOptions::NEAREST));
                     }
                 }
+                Action::StartExport => {
+                    self.password = Some(PasswordDialog {
+                        import: None,
+                        focus: true,
+                        ..Default::default()
+                    });
+                }
+                Action::StartImport => {
+                    if let Some(path) = backup::native_dialog(
+                        win::app_hwnd(),
+                        false,
+                        "",
+                        EXPORT_FILTER(),
+                        export::EXTENSION,
+                    ) {
+                        self.password = Some(PasswordDialog {
+                            import: Some(path),
+                            focus: true,
+                            ..Default::default()
+                        });
+                    }
+                }
+                Action::Export(pass) => {
+                    let name = backup::default_name().replace(".pegabak", ".pega");
+                    let Some(path) = backup::native_dialog(
+                        win::app_hwnd(),
+                        true,
+                        &name,
+                        EXPORT_FILTER(),
+                        export::EXTENSION,
+                    ) else {
+                        continue;
+                    };
+                    let result = export::export(&mut self.state.lock().unwrap(), &pass)
+                        .and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+                    match result {
+                        Ok(()) => self.flash(
+                            &tr!("Exportado a {}", "Exported to {}", path.display()),
+                            5.0,
+                            ctx,
+                        ),
+                        Err(e) => self.flash(&e, 6.0, ctx),
+                    }
+                }
+                Action::Import(path, pass) => {
+                    let result =
+                        std::fs::read(&path)
+                            .map_err(|e| e.to_string())
+                            .and_then(|bytes| {
+                                export::import(&mut self.state.lock().unwrap(), &bytes, &pass)
+                            });
+                    match result {
+                        Ok(s) => {
+                            if s.hotkeys_changed {
+                                win::reload_hotkey();
+                            }
+                            win::reschedule_expiry();
+                            self.flash(
+                                &tr!(
+                                    "Importado: {} del historial, {} tableros, {} clips",
+                                    "Imported: {} history items, {} boards, {} clips",
+                                    s.history,
+                                    s.boards,
+                                    s.clips
+                                ),
+                                6.0,
+                                ctx,
+                            );
+                        }
+                        Err(e) => self.flash(&e, 6.0, ctx),
+                    }
+                }
                 Action::PasteSequence(items) => {
                     self.multi.clear();
                     win::paste_sequence(ctx, items);
@@ -1408,6 +1606,10 @@ impl PegaApp {
                         | Action::Lock
                         | Action::PasteSequence(_)
                         | Action::ShowQr(_)
+                        | Action::StartExport
+                        | Action::StartImport
+                        | Action::Export(_)
+                        | Action::Import(..)
                         | Action::Backup
                         | Action::PickRestore
                         | Action::Restore(_)

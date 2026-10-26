@@ -44,13 +44,23 @@ pub fn default_name() -> String {
 /// Diálogo nativo de Windows para guardar (`save`) o abrir un respaldo.
 pub fn file_dialog(owner: isize, save: bool, default_name: &str) -> Option<PathBuf> {
     // Filtro: pares descripción\0patrón\0, terminado en doble \0.
-    let filter: Vec<u16> = t(
+    let filter = t(
         "Respaldo de Pega (*.pegabak)\0*.pegabak\0Todos los archivos\0*.*\0\0",
         "Pega backup (*.pegabak)\0*.pegabak\0All files\0*.*\0\0",
-    )
-    .encode_utf16()
-    .collect();
-    let def_ext = wide("pegabak");
+    );
+    native_dialog(owner, save, default_name, filter, "pegabak")
+}
+
+/// Diálogo nativo con un filtro (pares descripción\0patrón\0 terminados en \0\0) y una extensión.
+pub fn native_dialog(
+    owner: isize,
+    save: bool,
+    default_name: &str,
+    filter: &str,
+    ext: &str,
+) -> Option<PathBuf> {
+    let filter: Vec<u16> = filter.encode_utf16().collect();
+    let def_ext = wide(ext);
     let mut buf = [0u16; 1024];
     for (i, u) in default_name.encode_utf16().take(buf.len() - 1).enumerate() {
         buf[i] = u;

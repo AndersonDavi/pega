@@ -522,6 +522,124 @@ impl State {
         Some((img, png))
     }
 
+    /// PNG completo (descifrado) de una imagen del historial.
+    pub fn image_png(&mut self, id: i64) -> Option<Vec<u8>> {
+        let r = self.store.history_data(id);
+        crypto::unprotect(&self.report(r)?)
+    }
+
+    /// Posición en el historial (más reciente primero) para algo usado en `used_at`.
+    fn position_for(&self, used_at: i64) -> usize {
+        self.history
+            .iter()
+            .position(|e| e.used_at < used_at)
+            .unwrap_or(self.history.len())
+    }
+
+    /// Agrega un texto conservando su fecha y si estaba fijado (importación). No duplica.
+    pub fn import_text(
+        &mut self,
+        text: String,
+        used_at: i64,
+        pinned: bool,
+        app: Option<String>,
+    ) -> bool {
+        if text.trim().is_empty()
+            || self
+                .history
+                .iter()
+                .any(|e| e.image.is_none() && e.text == text)
+        {
+            return false;
+        }
+        let Some(data) = crypto::protect_str(&text) else {
+            return false;
+        };
+        let app = self.app_id(app);
+        let r = self.store.insert_history(&data, used_at, app);
+        let Some(id) = self.report(r) else {
+            return false;
+        };
+        if pinned {
+            let r = self.store.set_pinned(id, true);
+            self.report(r);
+        }
+        let lang = code::detect(&text);
+        let pos = self.position_for(used_at);
+        self.history.insert(
+            pos,
+            Entry {
+                id,
+                key: text_key(&text, lang),
+                lang,
+                text,
+                used_at,
+                pinned,
+                image: None,
+                app,
+            },
+        );
+        self.trim();
+        true
+    }
+
+    /// Igual que `import_text`, para imágenes (PNG y miniatura ya hechos). No duplica.
+    #[allow(clippy::too_many_arguments)]
+    pub fn import_image(
+        &mut self,
+        png: &[u8],
+        thumb_png: Vec<u8>,
+        hash: i64,
+        width: u32,
+        height: u32,
+        used_at: i64,
+        pinned: bool,
+        app: Option<String>,
+    ) -> bool {
+        if self
+            .history
+            .iter()
+            .any(|e| e.image.as_ref().is_some_and(|i| i.hash == hash))
+        {
+            return false;
+        }
+        let (Some(data), Some(thumb)) = (crypto::protect(png), crypto::protect(&thumb_png)) else {
+            return false;
+        };
+        let app = self.app_id(app);
+        let r = self
+            .store
+            .insert_image(&data, &thumb, hash, width, height, used_at, app);
+        let Some(id) = self.report(r) else {
+            return false;
+        };
+        if pinned {
+            let r = self.store.set_pinned(id, true);
+            self.report(r);
+        }
+        let pos = self.position_for(used_at);
+        let image = Some(ImageInfo {
+            width,
+            height,
+            hash,
+            thumb_png,
+        });
+        self.history.insert(
+            pos,
+            Entry {
+                id,
+                text: String::new(),
+                key: image_key(width, height),
+                used_at,
+                pinned,
+                image,
+                app,
+                lang: None,
+            },
+        );
+        self.trim();
+        true
+    }
     fn trim(&mut self) {
         // 0 = sin límite.
         let limit = |n: usize| if n == 0 { usize::MAX } else { n };
