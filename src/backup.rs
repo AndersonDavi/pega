@@ -135,8 +135,19 @@ pub fn apply_restore(dir: &Path, backup: &Path) -> Result<PathBuf, String> {
         "pega-antes-de-restaurar-{:04}{:02}{:02}-{:02}{:02}{:02}.db",
         t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
     ));
+    // Primero se copia el respaldo al lado: si la copia falla (disco lleno, archivo en uso),
+    // la base actual sigue intacta en su lugar en vez de quedar la app vacía.
+    let incoming = dir.join("pega-restaurando.tmp");
+    std::fs::copy(backup, &incoming).map_err(|e| {
+        let _ = std::fs::remove_file(&incoming);
+        tr!(
+            "No se pudo copiar el respaldo: {e}",
+            "Couldn't copy the backup: {e}"
+        )
+    })?;
     if db.exists() {
         std::fs::rename(&db, &kept).map_err(|e| {
+            let _ = std::fs::remove_file(&incoming);
             tr!(
                 "No se pudo apartar la base actual: {e}",
                 "Couldn't set the current database aside: {e}"
@@ -147,12 +158,14 @@ pub fn apply_restore(dir: &Path, backup: &Path) -> Result<PathBuf, String> {
     for ext in ["pega.db-wal", "pega.db-shm"] {
         let _ = std::fs::remove_file(dir.join(ext));
     }
-    std::fs::copy(backup, &db).map_err(|e| {
-        tr!(
+    if let Err(e) = std::fs::rename(&incoming, &db) {
+        // Se devuelve la base anterior a su lugar.
+        let _ = std::fs::rename(&kept, &db);
+        return Err(tr!(
             "No se pudo copiar el respaldo: {e}",
             "Couldn't copy the backup: {e}"
-        )
-    })?;
+        ));
+    }
     Ok(kept)
 }
 

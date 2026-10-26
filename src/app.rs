@@ -219,6 +219,8 @@ pub struct PegaApp {
     state: Arc<Mutex<State>>,
     query: String,
     selected: usize,
+    /// Id de la entrada seleccionada, para seguirla si cambia de posición.
+    selected_id: Option<i64>,
     scroll_to: Option<usize>,
     new_board: Option<String>,
     renaming: Option<(i64, String)>,
@@ -284,6 +286,7 @@ impl PegaApp {
             state,
             query: String::new(),
             selected: 0,
+            selected_id: None,
             scroll_to: None,
             new_board: None,
             renaming: None,
@@ -316,12 +319,20 @@ impl PegaApp {
     }
 }
 
-/// Primera línea, recortada, para la lista.
-fn preview(text: &str) -> String {
-    let trimmed = text.trim();
-    let first = trimmed.lines().next().unwrap_or("");
+/// Caracteres que se enmascaran y se muestran como máximo (lista y tooltips).
+const MASK_PREFIX: usize = 2000;
+
+/// Los primeros `n` caracteres de `s` (sin cortar un carácter por la mitad).
+fn prefix(s: &str, n: usize) -> &str {
+    s.char_indices().nth(n).map_or(s, |(i, _)| &s[..i])
+}
+
+/// Primera línea de `shown`, recortada, para la lista; las líneas se cuentan en `full`
+/// (`shown` puede ser solo el principio, ya enmascarado).
+fn preview(shown: &str, full: &str) -> String {
+    let first = shown.trim().lines().next().unwrap_or("");
     let mut out: String = first.chars().take(120).collect();
-    let lines = trimmed.lines().count();
+    let lines = full.trim().bytes().filter(|&b| b == b'\n').count() + 1;
     if lines > 1 {
         out.push_str(&tr!("  (+{} líneas)", "  (+{} lines)", lines - 1));
     } else if first.chars().count() > 120 {
@@ -423,15 +434,31 @@ impl egui_software_backend::App for PegaApp {
             self.lock.show(ui, &st.settings);
             drop(st);
             self.apply(&ctx, actions);
+            if win::take_hiding() {
+                self.on_hidden();
+            }
             return;
         }
         let hotkey = st.settings.hotkey.label();
-        let masked = |t: &str| mask(t, &st.settings.mask_words, st.settings.mask_cards);
+        // Solo el principio del texto: la lista y los tooltips nunca muestran más, y enmascarar
+        // 256 KB en cada cuadro por cada fila congelaría la ventana.
+        let masked = |t: &str| {
+            mask(
+                prefix(t, MASK_PREFIX),
+                &st.settings.mask_words,
+                st.settings.mask_cards,
+            )
+        };
+        // Con un diálogo o un campo de edición abierto, Enter/Esc/flechas son de ese campo.
         let modal_open = self.editor.is_some()
             || self.settings_window.is_some()
             || self.template_form.is_some()
             || self.qr.is_some()
-            || self.password.is_some();
+            || self.password.is_some()
+            || self.sync_dialog.is_some()
+            || self.confirm_restore.is_some()
+            || self.new_board.is_some()
+            || self.renaming.is_some();
 
         let just_shown = win::take_shown();
         if just_shown {
@@ -449,8 +476,25 @@ impl egui_software_backend::App for PegaApp {
             .filter(|e| query.matches_entry(e, st.app_name(e.app), now))
             .collect();
         hist.sort_by_key(|e| !e.pinned);
+        // La selección sigue a la entrada aunque se mueva (se volvió a copiar, llegó otra,
+        // venció una de arriba): Enter pega lo que se ve resaltado.
+        if !just_shown {
+            if let Some(p) = self
+                .selected_id
+                .and_then(|id| hist.iter().position(|e| e.id == id))
+            {
+                self.selected = p;
+            }
+        }
         if self.selected >= hist.len() {
             self.selected = hist.len().saturating_sub(1);
+        }
+        // Lo seleccionado con Ctrl+clic que se borró (venció, se limpió, lo borró otro PC).
+        if !self.multi.is_empty() {
+            self.multi.retain(|(s, ..)| match s {
+                Sel::Hist(id) => st.history.iter().any(|e| e.id == *id),
+                Sel::Clip(id) => st.clips.iter().any(|c| c.id == *id),
+            });
         }
         // Miniaturas de entradas que ya no existen.
         if self.thumbs.len() > st.history.len() {
@@ -460,12 +504,13 @@ impl egui_software_backend::App for PegaApp {
 
         // Teclado: flechas para moverse, Enter pega, Shift+Enter copia, Esc limpia/oculta.
         if !modal_open {
-            let (down, up, enter, shift_enter, esc) = ctx.input_mut(|i| {
+            let (down, up, shift_enter, enter, esc) = ctx.input_mut(|i| {
                 (
                     i.consume_key(Modifiers::NONE, Key::ArrowDown),
                     i.consume_key(Modifiers::NONE, Key::ArrowUp),
-                    i.consume_key(Modifiers::NONE, Key::Enter),
+                    // Primero con Shift: la comparación sin modificadores ignora Shift.
                     i.consume_key(Modifiers::SHIFT, Key::Enter),
+                    i.consume_key(Modifiers::NONE, Key::Enter),
                     i.consume_key(Modifiers::NONE, Key::Escape),
                 )
             });
@@ -487,7 +532,11 @@ impl egui_software_backend::App for PegaApp {
                 }
             }
             // Ctrl+1…9: pega directo esa entrada del historial (la fila muestra su número).
+            // Sin Alt: AltGr (Ctrl+Alt) + 2 escribe "@" en teclados en español.
             let quick = ctx.input_mut(|i| {
+                if i.modifiers.alt {
+                    return None;
+                }
                 QUICK_KEYS
                     .iter()
                     .position(|k| i.consume_key(Modifiers::CTRL, *k))
@@ -749,8 +798,11 @@ impl egui_software_backend::App for PegaApp {
                                             // El texto se recorta con "…": si no, una URL larga ensancha el panel.
                                             (
                                                 num,
-                                                format!("{pin}{}", preview(&masked(&e.text)))
-                                                    .atom_shrink(true),
+                                                format!(
+                                                    "{pin}{}",
+                                                    preview(&masked(&e.text), &e.text)
+                                                )
+                                                .atom_shrink(true),
                                             ),
                                         )
                                         .right_text(right)
@@ -759,19 +811,20 @@ impl egui_software_backend::App for PegaApp {
                                 }
                                 .on_hover_ui(|ui| {
                                     let text = masked(&e.text);
+                                    let text = text.as_str();
                                     match e.lang {
                                         Some(lang) => {
                                             ui.label(
                                                 egui::RichText::new(origin(app, e.used_at)).weak(),
                                             );
                                             ui.label(code::highlight(
-                                                &text,
+                                                text,
                                                 lang,
                                                 ui.visuals().dark_mode,
                                             ));
                                         }
                                         None => {
-                                            ui.label(tooltip(&text, app, e.used_at));
+                                            ui.label(tooltip(text, app, e.used_at));
                                         }
                                     }
                                     if let Some(read) =
@@ -919,7 +972,10 @@ impl egui_software_backend::App for PegaApp {
                                 .hint_text(t("Nombre del tablero", "Board name"))
                                 .desired_width(180.0),
                         );
-                        r.request_focus();
+                        // Solo si nada más tiene el foco: si no, no se podía volver a la búsqueda.
+                        if ctx.memory(|m| m.focused().is_none()) {
+                            r.request_focus();
+                        }
                         let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                         if (ui.button(t("Crear", "Create")).clicked() || enter) && !name.trim().is_empty() {
                             actions.push(Action::AddBoard(name.trim().to_owned()));
@@ -971,7 +1027,9 @@ impl egui_software_backend::App for PegaApp {
                                 let (id, name) = self.renaming.as_mut().unwrap();
                                 let width = (ui.available_width() - BOARD_BUTTONS_W).clamp(60.0, 220.0);
                                 let r = ui.add(egui::TextEdit::singleline(name).desired_width(width));
-                                r.request_focus();
+                                if ctx.memory(|m| m.focused().is_none()) {
+                                    r.request_focus();
+                                }
                                 if r.lost_focus() {
                                     if !name.trim().is_empty() {
                                         actions.push(Action::RenameBoard(*id, name.trim().to_owned()));
@@ -1488,27 +1546,19 @@ impl egui_software_backend::App for PegaApp {
             }
         }
 
+        self.selected_id = hist.get(self.selected).map(|e| e.id);
         drop(hist);
         drop(st);
         self.apply(&ctx, actions);
-        // Ocultándose: las miniaturas se sueltan (egui libera sus texturas en este mismo
-        // cuadro) y se devuelve la RAM física. Al volver se recrean las que se vean.
         if win::take_hiding() {
-            self.thumbs.clear();
-            // Lo editado mientras la ventana estuvo abierta, a los otros PCs.
-            crate::sync::poke();
-            self.state.lock().unwrap().release_memory();
-            win::trim_memory();
+            self.on_hidden();
         }
     }
 
     fn on_exit(&mut self, _ctx: &egui::Context) {
         win::remove_tray();
         // Lo último que se cambió llega a los otros PCs aunque se cierre enseguida.
-        let cfg = self.state.lock().unwrap().sync.clone();
-        if let Some(cfg) = cfg {
-            crate::sync::write_own(&self.state, &cfg, &mut crate::sync::Tracker::default());
-        }
+        crate::sync::write_final(&self.state);
     }
 }
 
@@ -1615,6 +1665,10 @@ impl PegaApp {
                     }
                 },
                 Action::DisableSync => {
+                    let old = self.state.lock().unwrap().sync.clone();
+                    if let Some(cfg) = old {
+                        crate::sync::remove_own_file(&cfg);
+                    }
                     self.state.lock().unwrap().set_sync(None);
                     crate::sync::poke();
                     self.sync_dialog = None;
@@ -1809,6 +1863,18 @@ impl PegaApp {
                 }
             }
         }
+    }
+
+    /// Recién oculta: las miniaturas se sueltan (egui libera sus texturas en este mismo
+    /// cuadro) y se devuelve la RAM física. Al volver se recrean las que se vean.
+    fn on_hidden(&mut self) {
+        self.thumbs.clear();
+        // La selección múltiple guarda textos: no se quedan esperando con la ventana oculta.
+        self.multi.clear();
+        // Lo editado mientras la ventana estuvo abierta, a los otros PCs.
+        crate::sync::poke();
+        self.state.lock().unwrap().release_memory();
+        win::trim_memory();
     }
 
     fn flash(&mut self, msg: &str, secs: f64, ctx: &egui::Context) {

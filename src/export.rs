@@ -181,7 +181,19 @@ pub fn import(state: &mut State, bytes: &[u8], password: &str) -> Result<ImportS
     if let Ok(text) = conn.query_row("SELECT value FROM meta WHERE key = 'settings'", [], |r| {
         r.get::<_, String>(0)
     }) {
-        summary.hotkeys_changed = state.save_settings(Settings::decode(&text));
+        // Lo que protege o dimensiona los datos de este PC no se toma del archivo: con los
+        // límites de otro se borraba historial al importar, y con su PIN (o sin PIN) se podía
+        // quedar bloqueado o desprotegido.
+        let local = &state.settings;
+        let settings = Settings {
+            pin: local.pin.clone(),
+            lock_minutes: local.lock_minutes,
+            max_texts: local.max_texts,
+            max_images: local.max_images,
+            keep_days: local.keep_days,
+            ..Settings::decode(&text)
+        };
+        summary.hotkeys_changed = state.save_settings(settings);
     }
 
     // Tableros: por nombre; los nuevos se crean. Ids exportados -> ids locales.
@@ -337,6 +349,40 @@ mod tests {
         assert_eq!(
             import(&mut dst, &file, "contraseña larga").unwrap(),
             ImportSummary::default()
+        );
+    }
+
+    #[test]
+    fn import_keeps_local_limits_and_pin() {
+        let mut src = sample();
+        let mut s = src.settings.clone();
+        s.max_texts = 1;
+        s.pin = String::new();
+        s.theme = crate::settings::Theme::Light;
+        src.save_settings(s);
+        let file = export(&mut src, "contraseña larga").unwrap();
+
+        let mut dst = state();
+        let mut s = dst.settings.clone();
+        s.max_texts = 0;
+        s.pin = "2468".into();
+        dst.save_settings(s);
+        for i in 0..5 {
+            dst.capture(format!("texto local {i}"), None);
+        }
+        import(&mut dst, &file, "contraseña larga").unwrap();
+        assert_eq!(dst.settings.max_texts, 0, "límite local intacto");
+        assert_eq!(dst.settings.pin, "2468", "PIN local intacto");
+        assert!(
+            dst.settings.theme == crate::settings::Theme::Light,
+            "el resto sí llega"
+        );
+        assert!(
+            dst.history
+                .iter()
+                .filter(|e| e.text.starts_with("texto local"))
+                .count()
+                == 5
         );
     }
 

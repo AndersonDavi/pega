@@ -115,6 +115,8 @@ pub struct State {
     pub tombs: Vec<(i64, i64)>,
     /// Sincronización entre PCs, si está activada.
     pub sync: Option<crate::sync::Config>,
+    /// Al cargar se borró algo vencido o viejo (pega-cli avisa a la app abierta).
+    pub purged_on_load: bool,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -222,12 +224,15 @@ impl State {
             notice: None,
             tombs,
             sync,
+            purged_on_load: false,
         };
         state.encrypt_legacy_names(&plain_boards, &plain_clips)?;
         let mut state = state;
         state.refresh_sensitive();
+        let before = state.history.len();
         state.purge_old();
         state.purge_expired();
+        state.purged_on_load = state.history.len() != before;
         Ok(state)
     }
 
@@ -863,11 +868,16 @@ impl State {
     }
 
     pub fn toggle_pin(&mut self, id: i64) {
-        if let Some(e) = self.history.iter_mut().find(|e| e.id == id) {
-            e.pinned = !e.pinned;
-            let pinned = e.pinned;
-            let r = self.store.set_pinned(id, pinned);
-            self.report(r);
+        let Some(pinned) = self.history.iter().find(|e| e.id == id).map(|e| !e.pinned) else {
+            return;
+        };
+        // En memoria solo si quedó en disco: si no, se vería fijada una entrada que al
+        // reiniciar los límites podrían borrar.
+        let r = self.store.set_pinned(id, pinned);
+        if self.report(r).is_some() {
+            if let Some(e) = self.history.iter_mut().find(|e| e.id == id) {
+                e.pinned = pinned;
+            }
         }
     }
 

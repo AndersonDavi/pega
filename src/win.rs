@@ -44,11 +44,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     EnumThreadWindows, FindWindowW, GetCursorPos, GetForegroundWindow, GetMessageW,
     GetSystemMetrics, GetWindowTextW, GetWindowThreadProcessId, HWND_MESSAGE, IMAGE_ICON, IsWindow,
-    IsWindowVisible, KillTimer, LR_DEFAULTCOLOR, LoadImageW, MF_CHECKED, MF_SEPARATOR, MF_STRING,
-    MSG, PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOW,
-    SetForegroundWindow, SetTimer, ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    TrackPopupMenu, TranslateMessage, WM_APP, WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_LBUTTONUP, WM_NULL,
-    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    IsWindowVisible, KillTimer, LR_DEFAULTCOLOR, LR_SHARED, LoadImageW, MF_CHECKED, MF_SEPARATOR,
+    MF_STRING, MSG, PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON,
+    SW_SHOW, SetForegroundWindow, SetTimer, ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_CLIPBOARDUPDATE, WM_HOTKEY,
+    WM_LBUTTONUP, WM_NULL, WM_POWERBROADCAST, WM_RBUTTONUP, WM_TIMECHANGE, WM_TIMER, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 pub const WINDOW_TITLE: &str = "Pega";
@@ -143,6 +144,20 @@ pub fn trim_memory_after(delay: Duration) {
             K32EmptyWorkingSet(GetCurrentProcess());
         }
     });
+}
+
+/// Error que impide arrancar: sin consola, se muestra en un cuadro de diálogo y se sale.
+pub fn fatal(msg: &str) -> ! {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+    unsafe {
+        MessageBoxW(
+            ptr::null_mut(),
+            wide(msg).as_ptr(),
+            wide(WINDOW_TITLE).as_ptr(),
+            MB_OK | MB_ICONERROR,
+        )
+    };
+    std::process::exit(1)
 }
 
 /// true si ya hay otra instancia corriendo (el mutex vive hasta que el proceso termina).
@@ -301,8 +316,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             unsafe { schedule_expiry(hwnd) };
             0
         }
-        WM_RESCHEDULE => {
+        // Cambió la hora o el PC volvió de suspensión: el temporizador es relativo, así que
+        // los códigos y capturas sensibles se reprograman con el reloj nuevo.
+        WM_RESCHEDULE | WM_TIMECHANGE | WM_POWERBROADCAST => {
             unsafe { schedule_expiry(hwnd) };
+            if msg == WM_POWERBROADCAST {
+                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            }
             0
         }
         WM_RELOAD => {
@@ -444,7 +464,8 @@ unsafe fn add_tray(hwnd: HWND) {
             IMAGE_ICON,
             GetSystemMetrics(SM_CXSMICON),
             GetSystemMetrics(SM_CYSMICON),
-            LR_DEFAULTCOLOR,
+            // Compartido: lo libera Windows; si no, cada reinicio de Explorer dejaba uno.
+            LR_DEFAULTCOLOR | LR_SHARED,
         );
         set_tip(&mut nid, &hotkey_label());
         TRAY_OK.store(Shell_NotifyIconW(NIM_ADD, &nid) != 0, Relaxed);
@@ -534,6 +555,9 @@ pub fn remove_tray() {
 /// Quita el ícono de la bandeja y termina. SQLite en WAL no pierde nada ya escrito.
 pub fn quit() -> ! {
     remove_tray();
+    if let Some(shared) = SHARED.get() {
+        crate::sync::write_final(&shared.state);
+    }
     std::process::exit(0)
 }
 
@@ -651,16 +675,26 @@ fn capture_image(state: &Mutex<State>, dib: &[u8], app: Option<String>) -> bool 
         .iter()
         .find(|e| e.image.as_ref().is_some_and(|i| i.hash == hash))
         .map(|e| e.id);
-    if let (true, Some(id)) = (st.settings.ocr, id) {
+    let helper = crate::ocr::helper_path();
+    if let (true, Some(id), Some(helper)) = (st.settings.ocr, id, helper) {
+        drop(st);
+        // Solo la versión reducida espera su turno; la imagen completa se suelta aquí.
+        let data = crate::ocr::payload(&img);
+        drop(img);
         thread::spawn(move || {
-            if let Some(text) = crate::ocr::recognize(&img) {
+            if let Some(text) = crate::ocr::recognize_payload(&helper, data) {
                 if let Some(shared) = SHARED.get() {
                     let mut st = shared.state.lock().unwrap();
-                    if let Some(found) = st.set_ocr(id, text) {
-                        let message = st.sensitive_message(found);
-                        st.notice = Some(message.clone());
-                        drop(st);
-                        balloon(&message);
+                    let found = st.set_ocr(id, text);
+                    let message = found.map(|f| st.sensitive_message(f));
+                    if let Some(m) = &message {
+                        st.notice = Some(m.clone());
+                    }
+                    // Soltar el estado antes de tocar egui: al cerrar, egui toma su candado y
+                    // luego el del estado; al revés, los dos hilos se esperarían para siempre.
+                    drop(st);
+                    if let Some(m) = message {
+                        balloon(&m);
                         reschedule_expiry();
                     }
                     shared.ctx.request_repaint();
@@ -673,6 +707,12 @@ fn capture_image(state: &Mutex<State>, dib: &[u8], app: Option<String>) -> bool 
 
 unsafe fn read_clipboard(owner: HWND) -> Option<Captured> {
     unsafe {
+        // Primero abrir y después mirar las marcas: así lo que se lee es lo mismo que se revisó
+        // (si otra app copia justo en medio, como un gestor de contraseñas, no se cuela).
+        if !open_clipboard(owner) {
+            return None;
+        }
+        let _guard = ClipboardGuard;
         // Convención de Windows: los gestores de contraseñas marcan así lo que no se debe guardar.
         for name in [
             "ExcludeClipboardContentFromMonitorProcessing",
@@ -682,46 +722,48 @@ unsafe fn read_clipboard(owner: HWND) -> Option<Captured> {
                 return None;
             }
         }
-        // Si hay texto se guarda el texto (Excel, por ejemplo, también pone una imagen).
-        let is_text = IsClipboardFormatAvailable(CF_UNICODETEXT) != 0;
-        if !is_text && IsClipboardFormatAvailable(CF_DIB) == 0 || !open_clipboard(owner) {
-            return None;
-        }
-        let _guard = ClipboardGuard;
         let can_include = format_id("CanIncludeInClipboardHistory");
         if IsClipboardFormatAvailable(can_include) != 0 {
             let h = GetClipboardData(can_include);
             let p = GlobalLock(h) as *const u32;
             if !p.is_null() {
-                let allowed = *p != 0;
+                let allowed = GlobalSize(h) < 4 || *p != 0;
                 GlobalUnlock(h);
                 if !allowed {
                     return None;
                 }
             }
         }
-        if !is_text {
+        // Si hay texto se guarda el texto (Excel, por ejemplo, también pone una imagen).
+        if IsClipboardFormatAvailable(CF_UNICODETEXT) == 0 {
+            if IsClipboardFormatAvailable(CF_DIB) == 0 {
+                return None;
+            }
             let h = GetClipboardData(CF_DIB);
             let p = GlobalLock(h) as *const u8;
             if p.is_null() {
                 return None;
             }
-            let dib = std::slice::from_raw_parts(p, GlobalSize(h)).to_vec();
+            // Se valida la cabecera antes de copiar: una imagen gigante o mentirosa no se
+            // copia entera a memoria para después descartarla.
+            let size = GlobalSize(h);
+            let header = std::slice::from_raw_parts(p, size.min(image::DIB_HEADER_PEEK));
+            let dib = image::dib_len(header)
+                .filter(|&len| len <= size)
+                .map(|len| std::slice::from_raw_parts(p, len).to_vec());
             GlobalUnlock(h);
-            return Some(Captured::Dib(dib));
+            return dib.map(Captured::Dib);
         }
         let h = GetClipboardData(CF_UNICODETEXT);
         let p = GlobalLock(h) as *const u16;
         if p.is_null() {
             return None;
         }
+        // El largo real es hasta el primer nulo (el bloque puede ser más grande que el texto).
         let max = GlobalSize(h) / 2;
-        let text = if max > MAX_TEXT_BYTES {
-            None
-        } else {
-            let len = (0..max).find(|&i| *p.add(i) == 0).unwrap_or(max);
-            Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, len)))
-        };
+        let len = (0..max).find(|&i| *p.add(i) == 0).unwrap_or(max);
+        let text = (len <= MAX_TEXT_BYTES)
+            .then(|| String::from_utf16_lossy(std::slice::from_raw_parts(p, len)));
         GlobalUnlock(h);
         text.map(Captured::Text)
     }
@@ -836,6 +878,8 @@ pub fn paste_into_previous(ctx: &egui::Context) {
         if prev.is_null() || IsWindow(prev) == 0 {
             return;
         }
+        // Con Ctrl+1…9 la tecla sigue apretada: el destino recibiría Ctrl+Shift+V o similar.
+        wait_modifiers_released();
         thread::sleep(Duration::from_millis(60));
         SetForegroundWindow(prev);
         thread::sleep(Duration::from_millis(40));
@@ -880,6 +924,7 @@ pub fn paste_sequence(ctx: &egui::Context, items: Vec<(String, bool)>) {
         if prev.is_null() || IsWindow(prev) == 0 {
             return;
         }
+        wait_modifiers_released();
         thread::sleep(Duration::from_millis(60));
         SetForegroundWindow(prev);
         thread::sleep(Duration::from_millis(60));

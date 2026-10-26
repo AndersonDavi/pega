@@ -95,10 +95,11 @@ fn json(text: &str, pretty: bool) -> Option<String> {
     let mut stack: Vec<char> = Vec::new();
     let mut in_str = false;
     let mut escape = false;
+    // Sangría tope: con miles de "[" anidados la salida crecía al cuadrado (gigas).
     let newline = |out: &mut String, depth: usize| {
         if pretty {
             out.push('\n');
-            out.extend(std::iter::repeat_n("  ", depth));
+            out.extend(std::iter::repeat_n("  ", depth.min(32)));
         }
     };
     let chars: Vec<char> = src.chars().collect();
@@ -182,8 +183,12 @@ fn url_decode(text: &str) -> Option<String> {
     while i < bytes.len() {
         match bytes[i] {
             b'%' => {
-                let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
-                out.push(u8::from_str_radix(hex, 16).ok()?);
+                // Dos dígitos hexadecimales exactos ("%+1" no vale, aunque el parser lo acepte).
+                let hex = bytes.get(i + 1..i + 3)?;
+                if !hex.iter().all(u8::is_ascii_hexdigit) {
+                    return None;
+                }
+                out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
                 i += 3;
             }
             b'+' => {
@@ -233,6 +238,21 @@ mod tests {
                 .unwrap(),
             r#"{"q":"dijo \"hola\" }"}"#
         );
+    }
+
+    #[test]
+    fn deep_nesting_does_not_explode() {
+        // 100 000 "[" anidados: antes la salida crecía al cuadrado (decenas de GB).
+        let deep = format!("{}{}", "[".repeat(100_000), "]".repeat(100_000));
+        let out = Transform::JsonPretty.apply(&deep).unwrap();
+        assert!(out.len() < 20_000_000, "{} bytes", out.len());
+    }
+
+    #[test]
+    fn url_decode_needs_two_hex_digits() {
+        assert_eq!(Transform::UrlDecode.apply("a%20b").unwrap(), "a b");
+        assert!(Transform::UrlDecode.apply("%+1").is_none());
+        assert!(Transform::UrlDecode.apply("%zz").is_none());
     }
 
     #[test]

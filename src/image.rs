@@ -68,12 +68,14 @@ pub fn fit(img: &Rgba, max_w: u32, max_h: u32) -> Rgba {
     let tw = ((img.width as f64 * scale).round() as u32).max(1);
     let th = ((img.height as f64 * scale).round() as u32).max(1);
     let mut pixels = Vec::with_capacity((tw * th * 4) as usize);
+    // En u64: con imágenes muy anchas (40 millones x 1) `t * ancho` no cabe en u32.
+    let at = |t: u32, len: u32, parts: u32| (t as u64 * len as u64 / parts as u64) as u32;
     for ty in 0..th {
-        let y0 = ty * img.height / th;
-        let y1 = ((ty + 1) * img.height / th).max(y0 + 1);
+        let y0 = at(ty, img.height, th);
+        let y1 = at(ty + 1, img.height, th).max(y0 + 1);
         for tx in 0..tw {
-            let x0 = tx * img.width / tw;
-            let x1 = ((tx + 1) * img.width / tw).max(x0 + 1);
+            let x0 = at(tx, img.width, tw);
+            let x1 = at(tx + 1, img.width, tw).max(x0 + 1);
             let mut sum = [0u64; 4];
             for y in y0..y1 {
                 let row = (y * img.width) as usize * 4;
@@ -103,8 +105,28 @@ fn u32_at(b: &[u8], i: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?))
 }
 
-/// CF_DIB (BITMAPINFOHEADER + píxeles) de 24 o 32 bits a RGBA.
-pub fn from_dib(b: &[u8]) -> Option<Rgba> {
+/// Bytes de cabecera que alcanzan para validar un DIB (BITMAPINFOHEADER + máscaras).
+pub const DIB_HEADER_PEEK: usize = 52;
+
+/// Lo que dice la cabecera de un DIB, ya validado.
+struct DibLayout {
+    width: u32,
+    height: u32,
+    bottom_up: bool,
+    bytes_pp: usize,
+    stride: usize,
+    offset: usize,
+    /// Rojo y azul invertidos (máscaras de BI_BITFIELDS en orden RGB en vez de BGR).
+    swap_rb: bool,
+}
+
+impl DibLayout {
+    fn len(&self) -> usize {
+        self.offset + self.stride * self.height as usize
+    }
+}
+
+fn dib_layout(b: &[u8]) -> Option<DibLayout> {
     let header_size = u32_at(b, 0)? as usize;
     let width = u32_at(b, 4)? as i32;
     let raw_height = u32_at(b, 8)? as i32;
@@ -113,42 +135,69 @@ pub fn from_dib(b: &[u8]) -> Option<Rgba> {
     let colors_used = u32_at(b, 32)? as usize;
     const BI_RGB: u32 = 0;
     const BI_BITFIELDS: u32 = 3;
-    if width <= 0 || raw_height == 0 || !(bit_count == 24 || bit_count == 32) {
+    if header_size < 40 || width <= 0 || raw_height == 0 || !(bit_count == 24 || bit_count == 32) {
         return None;
     }
-    if compression != BI_RGB && !(compression == BI_BITFIELDS && bit_count == 32) {
+    let bitfields = compression == BI_BITFIELDS && bit_count == 32;
+    if compression != BI_RGB && !bitfields {
         return None;
     }
     let (width, height) = (width as u32, raw_height.unsigned_abs());
     if width as u64 * height as u64 > MAX_PIXELS {
         return None;
     }
-    // Con BI_BITFIELDS y cabecera clásica de 40 bytes, las 3 máscaras van justo después.
-    let masks = if compression == BI_BITFIELDS && header_size == 40 {
+    // Las máscaras van en el byte 40: justo después de la cabecera clásica de 40 bytes, o
+    // dentro de las cabeceras V4/V5. Solo se aceptan BGR (lo normal) y RGB (se invierte).
+    let mut swap_rb = false;
+    if bitfields {
+        let (r, g, bl) = (u32_at(b, 40)?, u32_at(b, 44)?, u32_at(b, 48)?);
+        match (r, g, bl) {
+            (0x00FF_0000, 0x0000_FF00, 0x0000_00FF) => {}
+            (0x0000_00FF, 0x0000_FF00, 0x00FF_0000) => swap_rb = true,
+            _ => return None,
+        }
+    }
+    let masks = if bitfields && header_size == 40 {
         12
     } else {
         0
     };
-    let offset = header_size + masks + colors_used * 4;
-    let bytes_pp = bit_count as usize / 8;
-    let stride = (width as usize * bit_count as usize).div_ceil(32) * 4;
-    let data = b.get(offset..offset + stride * height as usize)?;
-    // Altura positiva = filas de abajo hacia arriba.
-    let bottom_up = raw_height > 0;
-    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    Some(DibLayout {
+        width,
+        height,
+        bottom_up: raw_height > 0,
+        bytes_pp: bit_count as usize / 8,
+        stride: (width as usize * bit_count as usize).div_ceil(32) * 4,
+        offset: header_size
+            .checked_add(masks)?
+            .checked_add(colors_used.checked_mul(4)?)?,
+        swap_rb,
+    })
+}
+
+/// Tamaño total que necesita el DIB según su cabecera, o None si no es uno que Pega lea.
+/// Sirve para no copiar del portapapeles más de lo necesario (ni imágenes inválidas).
+pub fn dib_len(header: &[u8]) -> Option<usize> {
+    dib_layout(header).map(|l| l.len())
+}
+
+/// CF_DIB (BITMAPINFOHEADER + píxeles) de 24 o 32 bits a RGBA.
+pub fn from_dib(b: &[u8]) -> Option<Rgba> {
+    let l = dib_layout(b)?;
+    let data = b.get(l.offset..l.len())?;
+    let (width, height) = (l.width as usize, l.height as usize);
+    let (r, bl) = if l.swap_rb { (0, 2) } else { (2, 0) };
+    let mut pixels = Vec::with_capacity(width * height * 4);
     let mut any_alpha = false;
-    for y in 0..height as usize {
-        let src_y = if bottom_up {
-            height as usize - 1 - y
-        } else {
-            y
-        };
-        let row = &data[src_y * stride..];
-        for x in 0..width as usize {
-            let p = &row[x * bytes_pp..];
-            let a = if bytes_pp == 4 { p[3] } else { 255 };
+    for y in 0..height {
+        // Altura positiva = filas de abajo hacia arriba.
+        let src_y = if l.bottom_up { height - 1 - y } else { y };
+        let row = &data[src_y * l.stride..];
+        for x in 0..width {
+            let p = &row[x * l.bytes_pp..];
+            let a = if l.bytes_pp == 4 { p[3] } else { 255 };
             any_alpha |= a != 0;
-            pixels.extend_from_slice(&[p[2], p[1], p[0], a]);
+            pixels.extend_from_slice(&[p[r], p[1], p[bl], a]);
         }
     }
     // Muchas apps dejan el alfa en 0 aunque la imagen sea opaca.
@@ -156,12 +205,11 @@ pub fn from_dib(b: &[u8]) -> Option<Rgba> {
         pixels.chunks_exact_mut(4).for_each(|p| p[3] = 255);
     }
     Some(Rgba {
-        width,
-        height,
+        width: l.width,
+        height: l.height,
         pixels,
     })
 }
-
 /// RGBA a CF_DIB de 32 bits, de abajo hacia arriba (lo que más apps aceptan).
 pub fn to_dib(img: &Rgba) -> Vec<u8> {
     let mut out = Vec::with_capacity(40 + img.pixels.len());
@@ -219,6 +267,58 @@ mod tests {
         dib.extend_from_slice(&[0, 0, 255, 0]); // BGR + relleno
         let img = from_dib(&dib).unwrap();
         assert_eq!(img.pixels, [255, 0, 0, 255]);
+    }
+
+    /// DIB de 32 bits con BI_BITFIELDS y las máscaras dadas (R, G, B): 1x1.
+    fn bitfields(r: u32, g: u32, b: u32, pixel: [u8; 4]) -> Vec<u8> {
+        let mut dib = vec![0u8; 40];
+        dib[0] = 40;
+        dib[4] = 1;
+        dib[8] = 1;
+        dib[12] = 1;
+        dib[14] = 32;
+        dib[16] = 3; // BI_BITFIELDS
+        for m in [r, g, b] {
+            dib.extend_from_slice(&m.to_le_bytes());
+        }
+        dib.extend_from_slice(&pixel);
+        dib
+    }
+
+    #[test]
+    fn bitfield_masks_decide_channel_order() {
+        // BGR (lo normal) y RGB (se invierte): ambos dan rojo.
+        let bgr = bitfields(0x00FF_0000, 0x0000_FF00, 0x0000_00FF, [0, 0, 255, 255]);
+        assert_eq!(from_dib(&bgr).unwrap().pixels, [255, 0, 0, 255]);
+        let rgb = bitfields(0x0000_00FF, 0x0000_FF00, 0x00FF_0000, [255, 0, 0, 255]);
+        assert_eq!(from_dib(&rgb).unwrap().pixels, [255, 0, 0, 255]);
+        // Máscaras raras (16 bits empaquetados, etc.): no se adivina.
+        assert!(from_dib(&bitfields(0xF800, 0x07E0, 0x001F, [0; 4])).is_none());
+    }
+
+    #[test]
+    fn dib_len_validates_before_copying() {
+        let dib = to_dib(&sample());
+        assert_eq!(dib_len(&dib[..DIB_HEADER_PEEK]), Some(dib.len()));
+        // 60000 x 60000: se rechaza solo con la cabecera, sin copiar 14 GB.
+        let mut huge = dib[..40].to_vec();
+        huge[4..8].copy_from_slice(&60_000i32.to_le_bytes());
+        huge[8..12].copy_from_slice(&60_000i32.to_le_bytes());
+        assert_eq!(dib_len(&huge), None);
+        assert_eq!(dib_len(&dib[..20]), None, "cabecera incompleta");
+    }
+
+    #[test]
+    fn very_wide_images_scale_without_overflow() {
+        // 2 000 000 x 2: `x * ancho` no cabe en u32.
+        let img = Rgba {
+            width: 2_000_000,
+            height: 2,
+            pixels: vec![200; 2_000_000 * 2 * 4],
+        };
+        let t = fit(&img, 2500, 2500);
+        assert_eq!(t.width, 2500);
+        assert!(t.pixels.iter().all(|&v| v == 200), "sin basura");
     }
 
     #[test]

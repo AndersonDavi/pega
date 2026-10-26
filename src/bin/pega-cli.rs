@@ -47,7 +47,7 @@ fn main() {
     let store = Store::open(&db).unwrap_or_else(|e| fail(&e.to_string()));
     let mut state = State::load(store).unwrap_or_else(|e| fail(&e.to_string()));
     let out = cli::run(&cmd, &mut state).unwrap_or_else(|e| fail(&e));
-    if cmd.writes() {
+    if cmd.writes() || state.purged_on_load {
         state.flush();
         // Si la app está abierta, que vuelva a leer la base.
         win::notify_reload();

@@ -9,6 +9,7 @@ use egui::{Color32, FontId};
 /// Solo se mira el principio: suficiente para decidir y acota el costo en textos largos.
 const SAMPLE: usize = 4096;
 const PREVIEW_LINES: usize = 30;
+const PREVIEW_CHARS: usize = 2000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
@@ -379,12 +380,18 @@ pub fn highlight(text: &str, lang: Lang, dark: bool) -> LayoutJob {
             },
         );
     };
+    // Tope de líneas y de caracteres: un JSON minificado de 256 KB es una sola línea.
     let mut src: String = text
         .lines()
         .take(PREVIEW_LINES)
         .collect::<Vec<_>>()
         .join("\n");
-    if text.lines().count() > PREVIEW_LINES {
+    let mut cut = text.lines().nth(PREVIEW_LINES).is_some();
+    if let Some((i, _)) = src.char_indices().nth(PREVIEW_CHARS) {
+        src.truncate(i);
+        cut = true;
+    }
+    if cut {
         src.push_str("\n…");
     }
     let chars: Vec<char> = src.chars().collect();

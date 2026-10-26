@@ -100,7 +100,8 @@ fn parse_age(v: &str) -> Option<i64> {
         's' | 'w' => 7 * 86_400_000,
         _ => return None,
     };
-    (n > 0).then_some(n * ms)
+    // checked_mul: "hace:9999999999999999d" no cabe en i64.
+    (n > 0).then(|| n.checked_mul(ms)).flatten()
 }
 
 #[cfg(test)]
@@ -128,6 +129,12 @@ mod tests {
         }
     }
     const NOW: i64 = 1_000_000_000;
+
+    #[test]
+    fn huge_ages_do_not_overflow() {
+        assert_eq!(parse_age("9999999999999999d"), None);
+        assert_eq!(parse_age("2h"), Some(7_200_000));
+    }
 
     #[test]
     fn parses_filters_and_terms() {

@@ -6,11 +6,14 @@ use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, mpsc};
+use std::thread;
+use std::time::Duration;
 
 /// El OCR de Windows no acepta imágenes más grandes (su máximo ronda los 2600 px).
 pub const MAX_SIDE: u32 = 2500;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const TIMEOUT: Duration = Duration::from_secs(30);
 /// Un reconocimiento a la vez, aunque lleguen varias capturas seguidas.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
@@ -34,6 +37,12 @@ pub fn payload(img: &Rgba) -> Vec<u8> {
 
 /// Texto reconocido, o `None` si no hay ayudante, falla o no encontró texto.
 pub fn recognize_with(helper: &Path, img: &Rgba) -> Option<String> {
+    recognize_payload(helper, payload(img))
+}
+
+/// Igual, con el `payload` ya armado (así la imagen completa no espera en memoria su turno).
+/// Si el OCR de Windows se cuelga, a los 30 s se cierra el ayudante y se sigue.
+pub fn recognize_payload(helper: &Path, data: Vec<u8>) -> Option<String> {
     let _turn = ONE_AT_A_TIME.lock().ok()?;
     let mut child = Command::new(helper)
         .stdin(Stdio::piped())
@@ -42,12 +51,27 @@ pub fn recognize_with(helper: &Path, img: &Rgba) -> Option<String> {
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .ok()?;
-    child.stdin.take()?.write_all(&payload(img)).ok()?;
-    let mut text = String::new();
-    child.stdout.take()?.read_to_string(&mut text).ok()?;
-    let ok = child.wait().ok()?.success();
-    let text = text.trim();
-    (ok && !text.is_empty()).then(|| text.to_owned())
+    let (mut stdin, mut stdout) = (child.stdin.take()?, child.stdout.take()?);
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = stdin.write_all(&data);
+        drop(stdin);
+        let mut text = String::new();
+        let ok = stdout.read_to_string(&mut text).is_ok();
+        let _ = tx.send(ok.then_some(text));
+    });
+    match rx.recv_timeout(TIMEOUT) {
+        Ok(Some(text)) => {
+            let ok = child.wait().ok()?.success();
+            let text = text.trim();
+            (ok && !text.is_empty()).then(|| text.to_owned())
+        }
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        }
+    }
 }
 
 pub fn recognize(img: &Rgba) -> Option<String> {

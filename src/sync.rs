@@ -90,16 +90,7 @@ pub fn enable(dir: &Path, password: &str) -> Result<Config, String> {
         .into());
     }
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let salt_path = dir.join(SALT_FILE);
-    let salt = match std::fs::read(&salt_path) {
-        Ok(s) if s.len() == 16 => s,
-        _ => {
-            let mut s = [0u8; 16];
-            random(&mut s)?;
-            std::fs::write(&salt_path, s).map_err(|e| e.to_string())?;
-            s.to_vec()
-        }
-    };
+    let salt = read_or_create_salt(dir)?;
     let key = derive_key(password, &salt)?;
     for path in peer_files(dir, None) {
         let Ok(bytes) = std::fs::read(&path) else {
@@ -122,16 +113,72 @@ pub fn enable(dir: &Path, password: &str) -> Result<Config, String> {
     })
 }
 
-/// Archivos de sincronización de la carpeta, menos el de `own` (este PC).
+/// La sal compartida. Solo se crea si de verdad no existe y la carpeta no tiene archivos de
+/// otros PCs: crearla de nuevo ante un error de lectura (OneDrive sin conexión, archivo
+/// bloqueado) dejaba a los demás PCs con otra clave para siempre.
+fn read_or_create_salt(dir: &Path) -> Result<Vec<u8>, String> {
+    let path = dir.join(SALT_FILE);
+    let unreadable = || {
+        crate::i18n::t(
+            "No se pudo leer pega-sync.salt de la carpeta; espera a que termine de sincronizarse.",
+            "Couldn't read pega-sync.salt in the folder; wait for it to finish syncing.",
+        )
+        .to_owned()
+    };
+    match std::fs::read(&path) {
+        Ok(s) if s.len() == 16 => return Ok(s),
+        Ok(_) => return Err(unreadable()),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(unreadable()),
+        Err(_) => {}
+    }
+    if !peer_files(dir, None).is_empty() {
+        return Err(unreadable());
+    }
+    let mut s = [0u8; 16];
+    random(&mut s)?;
+    // create_new: si otro PC la creó en este instante, se usa la suya.
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        f.write_all(&s).map_err(|e| e.to_string())?;
+    }
+    match std::fs::read(&path) {
+        Ok(s) if s.len() == 16 => Ok(s),
+        _ => Err(unreadable()),
+    }
+}
+
+/// Más viejo que esto, un archivo de otro PC se ignora: ese PC dejó de sincronizar y sus
+/// borrados ya se olvidaron, así que mezclarlo reviviría lo borrado.
+const STALE_DAYS: u64 = 30;
+
+/// Archivos de sincronización de la carpeta, menos el de `own` (este PC) y los abandonados.
 fn peer_files(dir: &Path, own: Option<&str>) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
+    let stale = std::time::Duration::from_secs(STALE_DAYS * 86_400);
     entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == EXT))
         .filter(|p| own.is_none_or(|own| p.file_stem().is_none_or(|s| s != own)))
+        .filter(|p| {
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .is_none_or(|age| age < stale)
+        })
         .collect()
+}
+
+/// Al desactivar: se borra el archivo de este PC, para que los demás no sigan mezclando una
+/// foto que ya no se actualiza.
+pub fn remove_own_file(cfg: &Config) {
+    let _ = std::fs::remove_file(cfg.own_file());
 }
 
 pub fn seal(key: &[u8; 32], plain: &[u8]) -> Result<Vec<u8>, String> {
@@ -277,7 +324,22 @@ fn parse(plain: &[u8]) -> Result<Remote, String> {
 
 /// Mezcla la foto de otro PC con lo local. Devuelve el nombre de ese PC y si cambió algo.
 pub fn merge(state: &mut State, plain: &[u8]) -> Result<(String, bool), String> {
-    let remote = parse(plain)?;
+    Ok(merge_remote(state, parse(plain)?))
+}
+
+fn merge_remote(state: &mut State, mut remote: Remote) -> (String, bool) {
+    // Un PC con el reloj adelantado no puede ganar todas las ediciones ni quedar arriba del
+    // historial para siempre: nada viene "del futuro" más allá de 5 minutos.
+    let limit = state::now() + 5 * 60_000;
+    for c in &mut remote.clips {
+        c.3 = c.3.min(limit);
+    }
+    for h in &mut remote.history {
+        h.1 = h.1.min(limit);
+    }
+    for at in remote.tombs.values_mut() {
+        *at = (*at).min(limit);
+    }
     let mut changed = false;
     let local_tombs: HashMap<i64, i64> = state.tombs.iter().copied().collect();
     let deleted_here = |key: i64, at: i64| local_tombs.get(&key).is_some_and(|&t| t >= at);
@@ -389,7 +451,7 @@ pub fn merge(state: &mut State, plain: &[u8]) -> Result<(String, bool), String> 
     let unpinned: Vec<i64> = state
         .history
         .iter()
-        .filter(|e| !e.pinned)
+        .filter(|e| !e.pinned && e.image.is_none())
         .map(|e| e.used_at)
         .collect();
     let full = state.settings.max_texts != 0 && unpinned.len() >= state.settings.max_texts;
@@ -410,7 +472,7 @@ pub fn merge(state: &mut State, plain: &[u8]) -> Result<(String, bool), String> 
         }
         changed |= state.import_text(text, used_at, pinned, app);
     }
-    Ok((remote.device, changed))
+    (remote.device, changed)
 }
 
 /// Estado para mostrar en la ventana de sincronización.
@@ -467,8 +529,10 @@ pub fn read_peers(state: &Mutex<State>, cfg: &Config, tracker: &mut Tracker) -> 
             }
             continue;
         }
-        match merge(&mut state.lock().unwrap(), &plain) {
-            Ok((device, c)) => {
+        // Leer la foto fuera del candado: la ventana y el portapapeles no esperan.
+        match parse(&plain) {
+            Ok(remote) => {
+                let (device, c) = merge_remote(&mut state.lock().unwrap(), remote);
                 peers.push(device);
                 changed |= c;
                 if let Some(m) = modified {
@@ -500,8 +564,11 @@ pub fn write_own(state: &Mutex<State>, cfg: &Config, tracker: &mut Tracker) {
         return;
     }
     let result = seal(&cfg.key, &plain).and_then(|bytes| {
-        // Escribir aparte y renombrar: los otros PCs nunca ven un archivo a medias.
-        let tmp = cfg.dir.join(format!("{}.tmp", cfg.device));
+        // Escribir aparte y renombrar: los otros PCs nunca ven un archivo a medias. El nombre
+        // temporal es único por si el hilo y el cierre de la app escriben a la vez.
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = cfg.dir.join(format!("{}.{n}.tmp", cfg.device));
         std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, cfg.own_file()).map_err(|e| e.to_string())
     });
@@ -517,9 +584,18 @@ pub fn write_own(state: &Mutex<State>, cfg: &Config, tracker: &mut Tracker) {
     }
 }
 
+/// Escritura final al cerrar Pega (Salir, restaurar o cerrar la ventana): lo último que
+/// se cambió llega a los otros PCs aunque el hilo estuviera esperando sus 2 s.
+pub fn write_final(state: &Mutex<State>) {
+    let cfg = state.lock().unwrap().sync.clone();
+    if let Some(cfg) = cfg {
+        write_own(state, &cfg, &mut Tracker::default());
+    }
+}
+
 // --- Hilo de sincronización: duerme hasta que la carpeta cambia o la app avisa. ---
 
-use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FindCloseChangeNotification,
     FindFirstChangeNotificationW, FindNextChangeNotification,
@@ -596,13 +672,22 @@ fn run(state: Arc<Mutex<State>>, wake: HANDLE, on_change: impl Fn()) {
             }
             if r == WAIT_OBJECT_0 {
                 // Cambio local: se esperan 2 s sin más cambios y se escribe una sola vez.
-                while unsafe { WaitForSingleObject(wake, 2_000) } != WAIT_TIMEOUT {}
+                // Como mucho 10 s, aunque el portapapeles cambie sin parar.
+                let start = std::time::Instant::now();
+                while start.elapsed().as_secs() < 10
+                    && unsafe { WaitForSingleObject(wake, 2_000) } == WAIT_OBJECT_0
+                {
+                }
                 if state.lock().unwrap().sync.as_ref() != Some(&cfg) {
                     break;
                 }
                 write_own(&state, &cfg, &mut tracker);
             } else if r == WAIT_OBJECT_0 + 1 {
-                unsafe { FindNextChangeNotification(watch) };
+                // Si la carpeta desapareció (disco desconectado, carpeta borrada), se vuelve
+                // a abrir desde cero en vez de quedar mirando un handle muerto.
+                if unsafe { FindNextChangeNotification(watch) } == 0 {
+                    break;
+                }
                 // Deja que la nube termine de bajar el archivo.
                 std::thread::sleep(std::time::Duration::from_millis(1_500));
                 if read_peers(&state, &cfg, &mut tracker) {
@@ -610,6 +695,8 @@ fn run(state: Arc<Mutex<State>>, wake: HANDLE, on_change: impl Fn()) {
                     write_own(&state, &cfg, &mut tracker);
                 }
             } else {
+                // Falla rara de la espera: pausa antes de reintentar, sin girar en vacío.
+                unsafe { WaitForSingleObject(wake, 5_000) };
                 break;
             }
         }
@@ -752,6 +839,46 @@ mod tests {
         assert_eq!(names, ["Oficina"]);
         assert_eq!(b.clips.len(), 1);
         assert_eq!(b.clips[0].board_id, b.boards[0].id);
+    }
+
+    #[test]
+    fn clock_ahead_cannot_win_forever() {
+        // Un PC con el reloj un año adelantado: su edición queda acotada a "ahora + 5 min".
+        let year = 365 * 86_400_000;
+        let mut ahead = state();
+        let b = ahead.add_board("Datos").unwrap();
+        ahead.save_clip_at(None, b, "Tel", "del futuro", state::now() + year);
+        ahead.import_text("futuro".into(), state::now() + year, false, None);
+        let mut me = state();
+        send(&ahead, &mut me);
+        assert!(me.clips[0].updated_at <= state::now() + 5 * 60_000);
+        assert!(me.history[0].used_at <= state::now() + 5 * 60_000);
+    }
+
+    #[test]
+    fn stale_peer_files_and_unreadable_salt_are_safe() {
+        let dir = std::env::temp_dir().join(format!("pega-sync-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cfg = enable(&dir, "contraseña común").unwrap();
+        let s = Mutex::new(state());
+        s.lock().unwrap().capture("viejo".into(), None);
+        write_own(&s, &cfg, &mut Tracker::default());
+        // Un archivo sin tocar hace 40 días es de un PC abandonado: no se mezcla.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(cfg.own_file())
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let other = enable(&dir, "contraseña común").unwrap();
+        let fresh = Mutex::new(state());
+        assert!(!read_peers(&fresh, &other, &mut Tracker::default()));
+        // Con la sal dañada no se crea otra (los demás PCs quedarían con otra clave).
+        std::fs::write(dir.join(SALT_FILE), b"corta").unwrap();
+        assert!(enable(&dir, "contraseña común").is_err());
+        assert_eq!(std::fs::read(dir.join(SALT_FILE)).unwrap(), b"corta");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -34,12 +34,21 @@ fn main() {
     }
     autostart::refresh();
     let dir = paths::data_dir();
-    std::fs::create_dir_all(&dir).expect("no se pudo crear %APPDATA%\\Pega");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        win::fatal(&format!("No se pudo crear {}: {e}", dir.display()));
+    }
     let restored = restore.map(|b| backup::apply_restore(&dir, &b));
-    let store =
-        store::Store::open(&dir.join("pega.db")).expect("no se pudo abrir la base de datos");
+    // Sin consola, un error al abrir la base cerraba la app sin decir nada: ahora se avisa.
+    let db = dir.join("pega.db");
+    let loaded = store::Store::open(&db).and_then(state::State::load);
     // Al cargar se aplica el idioma de los ajustes; los avisos se arman después.
-    let mut loaded = state::State::load(store).expect("no se pudo leer la base de datos");
+    let mut loaded = loaded.unwrap_or_else(|e| {
+        win::fatal(&tr!(
+            "No se pudo abrir la base de datos de Pega ({}): {e}\n\nSi se dañó, puedes restaurar un respaldo moviendo ese archivo y abriendo Pega de nuevo.",
+            "Couldn't open Pega's database ({}): {e}\n\nIf it's damaged, move that file away and open Pega again to restore a backup.",
+            db.display()
+        ))
+    });
     loaded.notice = restored.map(|r| match r {
         Ok(kept) => tr!(
             "Respaldo restaurado. La base anterior quedó en {}",
@@ -81,5 +90,5 @@ fn main() {
         }
         app::PegaApp::new(state.clone())
     })
-    .expect("no se pudo crear la ventana");
+    .unwrap_or_else(|e| win::fatal(&format!("No se pudo crear la ventana: {e}")));
 }

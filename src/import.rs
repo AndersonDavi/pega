@@ -9,6 +9,9 @@ use rusqlite::{Connection, MAIN_DB};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Niveles de tableros anidados que se recorren como máximo.
+const MAX_DEPTH: usize = 32;
+
 pub struct Summary {
     pub boards: usize,
     pub clips: usize,
@@ -115,7 +118,8 @@ pub fn import_from_bytes(state: &mut State, bytes: &[u8]) -> Result<Summary, Str
     let board_name = |id: &str| -> String {
         let mut parts = Vec::new();
         let mut cur = items.get(id);
-        while let Some(b) = cur {
+        // Tope de niveles: un tablero que sea su propio padre (base dañada) no cuelga la app.
+        while let Some(b) = cur.filter(|_| parts.len() < MAX_DEPTH) {
             parts.push(b.name.trim().to_owned());
             cur = b
                 .parent
@@ -137,7 +141,7 @@ pub fn import_from_bytes(state: &mut State, bytes: &[u8]) -> Result<Summary, Str
     let board_sort = |id: &str| -> (i64, Vec<i64>) {
         let mut path = Vec::new();
         let mut cur = items.get(id);
-        while let Some(b) = cur {
+        while let Some(b) = cur.filter(|_| path.len() < MAX_DEPTH) {
             path.push(b.order);
             cur = b
                 .parent
