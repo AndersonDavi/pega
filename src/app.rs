@@ -17,7 +17,7 @@ use crate::template;
 use crate::tr;
 use crate::transform;
 use crate::win;
-use egui::{Key, Modifiers, RichText, TextWrapMode, ViewportCommand};
+use egui::{AtomExt, Key, Modifiers, RichText, TextWrapMode, ViewportCommand};
 use egui_software_backend::SoftwareBackend;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -77,6 +77,19 @@ enum Action {
     Restore(PathBuf),
     Hide,
     Quit,
+}
+
+/// Ancho reservado a la derecha del título de un tablero para "+ Clip" y "…".
+const BOARD_BUTTONS_W: f32 = 96.0;
+
+/// Etiquetas y números de las filas: blancos sobre la fila seleccionada (azul) y un gris
+/// legible en las demás (`weak` quedaba con muy poco contraste).
+fn tag_color(ui: &egui::Ui, selected: bool, strength: f32) -> egui::Color32 {
+    if selected {
+        ui.visuals().selection.stroke.color.gamma_multiply(0.9)
+    } else {
+        ui.visuals().text_color().gamma_multiply(strength)
+    }
 }
 
 /// Elemento de la selección múltiple (Ctrl+clic).
@@ -556,9 +569,12 @@ impl egui_software_backend::App for PegaApp {
             ui.add_space(4.0);
         });
 
+        // Los tableros siempre conservan al menos 280 px, aunque se agrande el historial.
+        let max_history = (ui.available_width() - 280.0).max(220.0);
         egui::Panel::left("history")
             .resizable(true)
-            .default_size(340.0)
+            .default_size(340.0_f32.min(max_history))
+            .size_range(220.0..=max_history)
             .show_inside(ui, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -609,8 +625,7 @@ impl egui_software_backend::App for PegaApp {
                                     " ".into()
                                 })
                                 .small()
-                                .weak()
-                                .monospace();
+                                .color(tag_color(ui, selected, 0.55));
                                 let pin = if e.pinned { "📌 " } else { "" };
                                 let app = st.app_name(e.app);
                                 // "rust · chrome": lenguaje y app de origen.
@@ -621,7 +636,9 @@ impl egui_software_backend::App for PegaApp {
                                     .chain(e.lang.map(code::Lang::name))
                                     .chain(app.map(short_app))
                                     .collect();
-                                let right = egui::RichText::new(tags.join(" · ")).small().weak();
+                                let right = egui::RichText::new(tags.join(" · "))
+                                    .small()
+                                    .color(tag_color(ui, selected, 0.7));
                                 let resp = match &e.image {
                                     Some(img) => {
                                         let label = tr!(
@@ -634,20 +651,32 @@ impl egui_software_backend::App for PegaApp {
                                             Some(tex) => ui.add(
                                                 egui::Button::selectable(
                                                     selected,
-                                                    (num, egui::Image::new(&tex), label),
+                                                    (
+                                                        num,
+                                                        egui::Image::new(&tex),
+                                                        label.atom_shrink(true),
+                                                    ),
                                                 )
                                                 .right_text(right),
                                             ),
                                             None => ui.add(
-                                                egui::Button::selectable(selected, (num, label))
-                                                    .right_text(right),
+                                                egui::Button::selectable(
+                                                    selected,
+                                                    (num, label.atom_shrink(true)),
+                                                )
+                                                .right_text(right),
                                             ),
                                         }
                                     }
                                     None => ui.add(
                                         egui::Button::selectable(
                                             selected,
-                                            (num, format!("{pin}{}", preview(&masked(&e.text)))),
+                                            // El texto se recorta con "…": si no, una URL larga ensancha el panel.
+                                            (
+                                                num,
+                                                format!("{pin}{}", preview(&masked(&e.text)))
+                                                    .atom_shrink(true),
+                                            ),
                                         )
                                         .right_text(right)
                                         .min_size(egui::vec2(0.0, row_h)),
@@ -836,7 +865,8 @@ impl egui_software_backend::App for PegaApp {
                             let editing = matches!(&self.renaming, Some((id, _)) if *id == b.id);
                             if editing {
                                 let (id, name) = self.renaming.as_mut().unwrap();
-                                let r = ui.add(egui::TextEdit::singleline(name).desired_width(180.0));
+                                let width = (ui.available_width() - BOARD_BUTTONS_W).clamp(60.0, 220.0);
+                                let r = ui.add(egui::TextEdit::singleline(name).desired_width(width));
                                 r.request_focus();
                                 if r.lost_focus() {
                                     if !name.trim().is_empty() {
@@ -851,11 +881,20 @@ impl egui_software_backend::App for PegaApp {
                                     Some(color) => title.color(color),
                                     None => title,
                                 };
-                                let handle = ui
-                                    .add(egui::Label::new(title).sense(egui::Sense::drag()))
-                                    .on_hover_cursor(egui::CursorIcon::Grab)
-                                    .on_hover_text(t("Arrastra para reordenar", "Drag to reorder"));
-                                handle.dnd_set_drag_payload(DragBoard(b.id));
+                                // Se recorta con "…" para dejar siempre lugar a "+ Clip" y al menú.
+                                let room = (ui.available_width() - BOARD_BUTTONS_W).max(40.0);
+                                ui.scope(|ui| {
+                                    ui.set_max_width(room);
+                                    let handle = ui
+                                        .add(egui::Label::new(title).truncate().sense(egui::Sense::drag()))
+                                        .on_hover_cursor(egui::CursorIcon::Grab)
+                                        .on_hover_text(tr!(
+                                            "{} · arrastra para reordenar",
+                                            "{} · drag to reorder",
+                                            b.name
+                                        ));
+                                    handle.dnd_set_drag_payload(DragBoard(b.id));
+                                });
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.menu_button("…", |ui| {
