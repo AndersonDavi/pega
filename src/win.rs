@@ -11,17 +11,21 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use std::{mem, ptr, thread};
 use windows_sys::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HWND, LPARAM, LRESULT, WPARAM,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, GlobalFree, HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows_sys::Win32::System::DataExchange::{
     AddClipboardFormatListener, CloseClipboard, EmptyClipboard, GetClipboardData,
-    IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    GetClipboardOwner, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW,
+    SetClipboardData,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{
     GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
-use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
+use windows_sys::Win32::System::Threading::{
+    CreateMutexW, GetCurrentProcessId, GetCurrentThreadId, OpenProcess, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL,
     MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, SendInput, UnregisterHotKey, VK_CONTROL,
@@ -33,12 +37,12 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     EnumThreadWindows, FindWindowW, GetCursorPos, GetForegroundWindow, GetMessageW,
-    GetSystemMetrics, GetWindowTextW, IMAGE_ICON, IsWindow, IsWindowVisible, LR_DEFAULTCOLOR,
-    LoadImageW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, RegisterClassW,
-    RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOW, SetForegroundWindow, ShowWindow,
-    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP,
-    WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_POPUP,
+    GetSystemMetrics, GetWindowTextW, GetWindowThreadProcessId, IMAGE_ICON, IsWindow,
+    IsWindowVisible, LR_DEFAULTCOLOR, LoadImageW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG,
+    PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOW,
+    SetForegroundWindow, ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+    TranslateMessage, WM_APP, WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
+    WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 pub const WINDOW_TITLE: &str = "Pega";
@@ -183,9 +187,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     };
     match msg {
         WM_CLIPBOARDUPDATE => {
+            let app = source_app();
             let changed = match unsafe { read_clipboard(hwnd) } {
-                Some(Captured::Text(text)) => shared.state.lock().unwrap().capture(text),
-                Some(Captured::Dib(dib)) => capture_image(&shared.state, &dib),
+                Some(Captured::Text(text)) => shared.state.lock().unwrap().capture(text, app),
+                Some(Captured::Dib(dib)) => capture_image(&shared.state, &dib, app),
                 None => false,
             };
             if changed {
@@ -408,6 +413,36 @@ impl Drop for ClipboardGuard {
     }
 }
 
+/// Ejecutable que puso el contenido ("chrome.exe"): el dueño del portapapeles o, si
+/// no declaró ventana, la que está al frente. None si es Pega misma.
+fn source_app() -> Option<String> {
+    unsafe {
+        let mut hwnd = GetClipboardOwner();
+        if hwnd.is_null() {
+            hwnd = GetForegroundWindow();
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 || pid == GetCurrentProcessId() {
+            return None;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let ok =
+            QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+        CloseHandle(process);
+        if ok == 0 {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        path.rsplit('\\').next().map(str::to_lowercase)
+    }
+}
+
 enum Captured {
     Text(String),
     /// Bytes crudos de CF_DIB; se decodifican ya con el portapapeles cerrado.
@@ -416,7 +451,10 @@ enum Captured {
 
 /// Las capturas (ShareX, Win+Shift+S…) suelen avisar dos o más veces con la misma
 /// imagen; el hash de píxeles hace que solo suba al principio en vez de duplicarse.
-fn capture_image(state: &Mutex<State>, dib: &[u8]) -> bool {
+fn capture_image(state: &Mutex<State>, dib: &[u8], app: Option<String>) -> bool {
+    if state.lock().unwrap().excluded(&app) {
+        return false;
+    }
     let Some(img) = image::from_dib(dib) else {
         return false;
     };
@@ -424,7 +462,7 @@ fn capture_image(state: &Mutex<State>, dib: &[u8]) -> bool {
     if let Some(changed) = state.lock().unwrap().bump_image(hash) {
         return changed;
     }
-    match state::prepare_image(&img, hash) {
+    match state::prepare_image(&img, hash, app) {
         Some(prepared) => state.lock().unwrap().insert_image(prepared),
         None => false,
     }

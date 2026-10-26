@@ -19,6 +19,8 @@ pub struct Entry {
     pub used_at: i64,
     pub pinned: bool,
     pub image: Option<ImageInfo>,
+    /// App de la que vino la copia (id en State::apps).
+    pub app: Option<i64>,
 }
 
 pub struct ImageInfo {
@@ -38,9 +40,10 @@ pub struct PreparedImage {
     data: Vec<u8>,
     thumb: Vec<u8>,
     thumb_png: Vec<u8>,
+    app: Option<String>,
 }
 
-pub fn prepare_image(img: &Rgba, hash: i64) -> Option<PreparedImage> {
+pub fn prepare_image(img: &Rgba, hash: i64, app: Option<String>) -> Option<PreparedImage> {
     let png = image::encode_png(img, png::Compression::Balanced)?;
     let thumb_png = image::encode_png(&image::thumbnail(img), png::Compression::Balanced)?;
     Some(PreparedImage {
@@ -50,6 +53,7 @@ pub fn prepare_image(img: &Rgba, hash: i64) -> Option<PreparedImage> {
         data: crypto::protect(&png)?,
         thumb: crypto::protect(&thumb_png)?,
         thumb_png,
+        app,
     })
 }
 
@@ -76,6 +80,8 @@ pub struct State {
     pub history: Vec<Entry>,
     pub boards: Vec<Board>,
     pub clips: Vec<Clip>,
+    /// Ejecutables de origen ("chrome.exe"), con sus nombres cifrados en disco.
+    pub apps: Vec<(i64, String)>,
     pub settings: Settings,
     pub hotkey_ok: bool,
     pub error: Option<String>,
@@ -126,6 +132,7 @@ impl State {
                         key: image_key(r.width, r.height),
                         used_at: r.used_at,
                         pinned: r.pinned,
+                        app: r.app_id,
                         image: Some(ImageInfo {
                             width: r.width,
                             height: r.height,
@@ -142,8 +149,14 @@ impl State {
                     used_at: r.used_at,
                     pinned: r.pinned,
                     image: None,
+                    app: r.app_id,
                 })
             })
+            .collect();
+        let apps = store
+            .load_apps()?
+            .into_iter()
+            .filter_map(|(id, name)| Some((id, crypto::unprotect_str(&name)?)))
             .collect();
         // Nombres en claro de versiones anteriores: se cifran al cargarlos.
         let mut plain_boards = Vec::new();
@@ -194,11 +207,14 @@ impl State {
             history,
             boards,
             clips,
+            apps,
             settings,
             hotkey_ok: false,
             error: None,
         };
         state.encrypt_legacy_names(&plain_boards, &plain_clips)?;
+        let mut state = state;
+        state.purge_old();
         Ok(state)
     }
 
@@ -231,6 +247,7 @@ impl State {
         }
         self.settings = new;
         self.trim();
+        self.purge_old();
         hotkey_changed
     }
 
@@ -239,8 +256,8 @@ impl State {
     }
 
     /// Registra una copia nueva. Si ya existía, solo la sube al principio.
-    pub fn capture(&mut self, text: String) -> bool {
-        if text.trim().is_empty() || text.len() > MAX_TEXT_BYTES {
+    pub fn capture(&mut self, text: String, app: Option<String>) -> bool {
+        if text.trim().is_empty() || text.len() > MAX_TEXT_BYTES || self.excluded(&app) {
             return false;
         }
         if let Some(pos) = self
@@ -255,7 +272,8 @@ impl State {
             self.error = Some("DPAPI no pudo cifrar la copia".into());
             return false;
         };
-        let r = self.store.insert_history(&data, used_at);
+        let app = self.app_id(app);
+        let r = self.store.insert_history(&data, used_at, app);
         let Some(id) = self.report(r) else {
             return false;
         };
@@ -268,10 +286,70 @@ impl State {
                 used_at,
                 pinned: false,
                 image: None,
+                app,
             },
         );
         self.trim();
+        self.purge_old();
         true
+    }
+
+    pub fn excluded(&self, app: &Option<String>) -> bool {
+        app.as_deref().is_some_and(|a| self.settings.is_excluded(a))
+    }
+
+    pub fn app_name(&self, id: Option<i64>) -> Option<&str> {
+        let id = id?;
+        self.apps
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, n)| n.as_str())
+    }
+
+    /// Id de una app de origen; la registra (cifrada) la primera vez que aparece.
+    fn app_id(&mut self, name: Option<String>) -> Option<i64> {
+        let name = name?;
+        if let Some((id, _)) = self
+            .apps
+            .iter()
+            .find(|(_, n)| n.eq_ignore_ascii_case(&name))
+        {
+            return Some(*id);
+        }
+        let enc = crypto::protect_str(&name)?;
+        let r = self.store.add_app(&enc);
+        let id = self.report(r)?;
+        self.apps.push((id, name));
+        Some(id)
+    }
+
+    /// Deja de guardar copias de una app (desde el menú de una entrada).
+    pub fn exclude_app(&mut self, app: &str) {
+        if !self.settings.is_excluded(app) {
+            let mut s = self.settings.clone();
+            s.excluded_apps.push(app.to_lowercase());
+            self.save_settings(s);
+        }
+    }
+
+    /// Borra lo no fijado más viejo que keep_days (0 = nunca).
+    fn purge_old(&mut self) {
+        if self.settings.keep_days == 0 {
+            return;
+        }
+        let cutoff = now() - self.settings.keep_days as i64 * 86_400_000;
+        let drop: Vec<i64> = self
+            .history
+            .iter()
+            .filter(|e| !e.pinned && e.used_at < cutoff)
+            .map(|e| e.id)
+            .collect();
+        if drop.is_empty() {
+            return;
+        }
+        self.history.retain(|e| !drop.contains(&e.id));
+        let r = self.store.delete_history(&drop);
+        self.report(r);
     }
 
     /// Sube al principio una entrada que se volvió a copiar.
@@ -302,10 +380,14 @@ impl State {
         if self.bump_image(p.hash).is_some() {
             return true;
         }
+        if self.excluded(&p.app) {
+            return false;
+        }
         let used_at = now();
+        let app = self.app_id(p.app);
         let r = self
             .store
-            .insert_image(&p.data, &p.thumb, p.hash, p.width, p.height, used_at);
+            .insert_image(&p.data, &p.thumb, p.hash, p.width, p.height, used_at, app);
         let Some(id) = self.report(r) else {
             return false;
         };
@@ -317,6 +399,7 @@ impl State {
                 key: image_key(p.width, p.height),
                 used_at,
                 pinned: false,
+                app,
                 image: Some(ImageInfo {
                     width: p.width,
                     height: p.height,
@@ -326,6 +409,7 @@ impl State {
             },
         );
         self.trim();
+        self.purge_old();
         true
     }
 
@@ -463,5 +547,75 @@ impl State {
         let r = self.store.delete_clip(id);
         self.report(r);
         self.clips.retain(|c| c.id != id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn state() -> State {
+        State::load(Store::open(Path::new(":memory:")).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn repeated_copy_moves_to_top_instead_of_duplicating() {
+        let mut s = state();
+        assert!(s.capture("uno".into(), None));
+        assert!(s.capture("dos".into(), None));
+        assert!(s.capture("uno".into(), None));
+        assert_eq!(s.history.len(), 2);
+        assert_eq!(s.history[0].text, "uno");
+    }
+
+    #[test]
+    fn excluded_app_is_not_saved() {
+        let mut s = state();
+        s.exclude_app("KeePass.exe");
+        assert!(!s.capture("secreto".into(), Some("keepass.exe".into())));
+        assert!(s.capture("normal".into(), Some("chrome.exe".into())));
+        assert_eq!(s.app_name(s.history[0].app), Some("chrome.exe"));
+    }
+
+    #[test]
+    fn limits_keep_newest_and_pinned() {
+        let mut s = state();
+        let mut set = s.settings.clone();
+        set.max_texts = 2;
+        s.save_settings(set);
+        for t in ["a", "b", "c"] {
+            s.capture(t.into(), None);
+        }
+        let texts: Vec<&str> = s.history.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, ["c", "b"]);
+        let id = s.history[1].id;
+        s.toggle_pin(id);
+        s.capture("d".into(), None);
+        assert!(
+            s.history.iter().any(|e| e.text == "b"),
+            "lo fijado no se borra"
+        );
+    }
+
+    #[test]
+    fn old_entries_are_purged() {
+        let mut s = state();
+        s.capture("viejo".into(), None);
+        s.history[0].used_at = now() - 10 * 86_400_000;
+        let mut set = s.settings.clone();
+        set.keep_days = 7;
+        s.save_settings(set);
+        assert!(s.history.is_empty());
+    }
+
+    #[test]
+    fn names_and_text_round_trip_encrypted() {
+        let mut s = state();
+        let board = s.add_board("Info personal").unwrap();
+        s.save_clip(None, board, "Cédula", "123");
+        assert_eq!(s.clips[0].name, "Cédula");
+        assert!(matches("cedula 123", &["cedula".into()]));
+        assert_eq!(fold(&s.clips[0].key), "cedula 123");
     }
 }

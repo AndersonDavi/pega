@@ -4,6 +4,8 @@ use crate::settings::{self, Hotkey, Settings, Theme};
 
 pub struct SettingsWindow {
     draft: Settings,
+    /// Apps excluidas, una por línea, tal como se editan.
+    apps_text: String,
     capturing: bool,
     warning: Option<String>,
 }
@@ -18,6 +20,7 @@ impl SettingsWindow {
     pub fn new(current: &Settings) -> Self {
         Self {
             draft: current.clone(),
+            apps_text: current.excluded_apps.join("\n"),
             capturing: false,
             warning: None,
         }
@@ -71,15 +74,48 @@ impl SettingsWindow {
                         ui.label("Imágenes en el historial");
                         limit_editor(ui, &mut self.draft.max_images, 100);
                         ui.end_row();
+
+                        ui.label("Borrar copias con más de");
+                        ui.horizontal(|ui| {
+                            let mut forever = self.draft.keep_days == 0;
+                            if !forever {
+                                ui.add(
+                                    egui::DragValue::new(&mut self.draft.keep_days)
+                                        .range(1..=3650)
+                                        .suffix(" días"),
+                                );
+                            }
+                            if ui.checkbox(&mut forever, "Nunca").changed() {
+                                self.draft.keep_days = if forever { 0 } else { 30 };
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("No guardar copias de")
+                            .on_hover_text("Un ejecutable por línea, por ejemplo keepass.exe");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.apps_text)
+                                .hint_text("keepass.exe")
+                                .desired_rows(3)
+                                .desired_width(220.0),
+                        );
+                        ui.end_row();
                     });
-                ui.weak("Lo fijado nunca se borra por los límites.");
+                ui.weak("Lo fijado nunca se borra por los límites ni por antigüedad.");
                 if let Some(w) = &self.warning {
                     ui.colored_label(ui.visuals().warn_fg_color, w);
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Guardar").clicked() {
-                        outcome = Outcome::Save(self.draft.clone());
+                        let mut s = self.draft.clone();
+                        s.excluded_apps = self
+                            .apps_text
+                            .lines()
+                            .map(|l| l.trim().to_lowercase())
+                            .filter(|l| !l.is_empty())
+                            .collect();
+                        outcome = Outcome::Save(s);
                     }
                     if ui.button("Cancelar").clicked() {
                         outcome = Outcome::Cancel;

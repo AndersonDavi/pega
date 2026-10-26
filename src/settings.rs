@@ -136,6 +136,10 @@ pub struct Settings {
     pub max_texts: usize,
     /// 0 = sin límite.
     pub max_images: usize,
+    /// Borra del historial lo no fijado con más de estos días. 0 = nunca.
+    pub keep_days: u32,
+    /// Ejecutables cuyas copias no se guardan, en minúsculas ("keepass.exe").
+    pub excluded_apps: Vec<String>,
 }
 
 impl Default for Settings {
@@ -145,6 +149,8 @@ impl Default for Settings {
             theme: Theme::System,
             max_texts: 1000,
             max_images: 100,
+            keep_days: 0,
+            excluded_apps: Vec::new(),
         }
     }
 }
@@ -161,6 +167,8 @@ impl Settings {
             format!("theme={theme}"),
             format!("max_texts={}", self.max_texts),
             format!("max_images={}", self.max_images),
+            format!("keep_days={}", self.keep_days),
+            format!("excluded_apps={}", encode_list(&self.excluded_apps)),
         ]
         .join("\n")
     }
@@ -187,6 +195,8 @@ impl Settings {
                 }
                 "max_texts" => s.max_texts = value.parse().unwrap_or(s.max_texts),
                 "max_images" => s.max_images = value.parse().unwrap_or(s.max_images),
+                "keep_days" => s.keep_days = value.parse().unwrap_or(s.keep_days),
+                "excluded_apps" => s.excluded_apps = decode_list(value),
                 _ => {}
             }
         }
@@ -194,16 +204,69 @@ impl Settings {
     }
 }
 
-#[allow(dead_code)]
-pub fn encode_list(items: &[String]) -> String {
+fn encode_list(items: &[String]) -> String {
     items.join(&LIST_SEP.to_string())
 }
 
-#[allow(dead_code)]
-pub fn decode_list(value: &str) -> Vec<String> {
+fn decode_list(value: &str) -> Vec<String> {
     value
         .split(LIST_SEP)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+impl Settings {
+    pub fn is_excluded(&self, app: &str) -> bool {
+        self.excluded_apps
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(app))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip() {
+        let s = Settings {
+            hotkey: Hotkey {
+                ctrl: true,
+                alt: false,
+                shift: true,
+                win: false,
+                vk: 0x42,
+            },
+            theme: Theme::Light,
+            max_texts: 0,
+            max_images: 7,
+            keep_days: 30,
+            excluded_apps: vec!["keepass.exe".into(), "1password.exe".into()],
+        };
+        assert!(Settings::decode(&s.encode()) == s);
+    }
+
+    #[test]
+    fn damaged_values_fall_back_to_defaults() {
+        let s = Settings::decode("hotkey=basura\nmax_texts=x\nnada\nkeep_days=3");
+        assert!(s.hotkey == Hotkey::default());
+        assert_eq!(s.max_texts, 1000);
+        assert_eq!(s.keep_days, 3);
+    }
+
+    #[test]
+    fn hotkey_needs_a_modifier() {
+        assert!(
+            !Hotkey {
+                ctrl: false,
+                alt: false,
+                shift: true,
+                win: false,
+                vk: 0x41
+            }
+            .is_valid()
+        );
+        assert_eq!(Hotkey::default().label(), "Ctrl+Alt+V");
+    }
 }

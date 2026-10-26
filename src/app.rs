@@ -30,6 +30,7 @@ enum Action {
     },
     TogglePin(i64),
     DeleteEntry(i64),
+    ExcludeApp(String),
     ClearHistory,
     SaveToBoard {
         board_id: i64,
@@ -129,12 +130,36 @@ fn preview(text: &str) -> String {
     out
 }
 
-fn tooltip(text: &str) -> String {
-    let mut t: String = text.chars().take(600).collect();
-    if text.chars().count() > 600 {
-        t.push('…');
+/// Texto del tooltip: de dónde y cuándo vino, y el contenido (recortado).
+fn tooltip(text: &str, app: Option<&str>, used_at: i64) -> String {
+    let mut t = match app {
+        Some(app) => format!("Desde {app} · {}", ago(used_at)),
+        None => ago(used_at),
+    };
+    if !text.is_empty() {
+        t.push_str("\n\n");
+        t.extend(text.chars().take(600));
+        if text.chars().count() > 600 {
+            t.push('…');
+        }
     }
     t
+}
+
+/// "hace 5 min", a partir de milisegundos Unix.
+fn ago(ms: i64) -> String {
+    let s = ((state::now() - ms) / 1000).max(0);
+    match s {
+        0..60 => "hace un momento".into(),
+        60..3600 => format!("hace {} min", s / 60),
+        3600..86400 => format!("hace {} h", s / 3600),
+        _ => format!("hace {} días", s / 86400),
+    }
+}
+
+/// "chrome.exe" -> "chrome", para la columna de la derecha.
+fn short_app(app: &str) -> &str {
+    app.strip_suffix(".exe").unwrap_or(app)
 }
 
 fn item_of(e: &state::Entry) -> Item {
@@ -336,30 +361,38 @@ impl egui_software_backend::App for PegaApp {
                             for (i, e) in hist.iter().enumerate() {
                                 let selected = i == self.selected;
                                 let pin = if e.pinned { "📌 " } else { "" };
+                                let app = st.app_name(e.app);
+                                let right = egui::RichText::new(app.map(short_app).unwrap_or(""))
+                                    .small()
+                                    .weak();
                                 let resp = match &e.image {
                                     Some(img) => {
                                         let label =
                                             format!("{pin}Imagen {}×{}", img.width, img.height);
                                         match self.thumb(&ctx, e) {
-                                            Some(tex) => ui.add(egui::Button::selectable(
-                                                selected,
-                                                (egui::Image::new(&tex), label),
-                                            )),
-                                            None => {
-                                                ui.add(egui::Button::selectable(selected, label))
-                                            }
+                                            Some(tex) => ui.add(
+                                                egui::Button::selectable(
+                                                    selected,
+                                                    (egui::Image::new(&tex), label),
+                                                )
+                                                .right_text(right),
+                                            ),
+                                            None => ui.add(
+                                                egui::Button::selectable(selected, label)
+                                                    .right_text(right),
+                                            ),
                                         }
                                     }
-                                    None => ui
-                                        .add(
-                                            egui::Button::selectable(
-                                                selected,
-                                                format!("{pin}{}", preview(&e.text)),
-                                            )
-                                            .min_size(egui::vec2(0.0, row_h)),
+                                    None => ui.add(
+                                        egui::Button::selectable(
+                                            selected,
+                                            format!("{pin}{}", preview(&e.text)),
                                         )
-                                        .on_hover_text(tooltip(&e.text)),
-                                };
+                                        .right_text(right)
+                                        .min_size(egui::vec2(0.0, row_h)),
+                                    ),
+                                }
+                                .on_hover_text(tooltip(&e.text, app, e.used_at));
                                 if scroll_to == Some(i) {
                                     resp.scroll_to_me(None);
                                 }
@@ -404,6 +437,14 @@ impl egui_software_backend::App for PegaApp {
                                         });
                                     }
                                     ui.separator();
+                                    if let Some(app) = app {
+                                        if ui
+                                            .button(format!("No guardar copias de {app}"))
+                                            .clicked()
+                                        {
+                                            actions.push(Action::ExcludeApp(app.to_owned()));
+                                        }
+                                    }
                                     if ui.button("Borrar").clicked() {
                                         actions.push(Action::DeleteEntry(e.id));
                                     }
@@ -653,6 +694,7 @@ impl PegaApp {
                     match other {
                         Action::TogglePin(id) => st.toggle_pin(id),
                         Action::DeleteEntry(id) => st.delete_entry(id),
+                        Action::ExcludeApp(app) => st.exclude_app(&app),
                         Action::ClearHistory => st.clear_history(),
                         Action::SaveToBoard { board_id, text } => {
                             let name: String = text

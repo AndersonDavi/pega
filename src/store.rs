@@ -21,6 +21,7 @@ pub struct HistoryRow {
     pub height: u32,
     pub used_at: i64,
     pub pinned: bool,
+    pub app_id: Option<i64>,
 }
 
 pub struct ClipRow {
@@ -79,6 +80,10 @@ impl Store {
              CREATE TABLE IF NOT EXISTS meta (
                  key   TEXT PRIMARY KEY,
                  value BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS apps (
+                 id   INTEGER PRIMARY KEY,
+                 name BLOB NOT NULL
              );",
         )?;
         // Columnas de imágenes, agregadas después de la primera versión.
@@ -92,6 +97,7 @@ impl Store {
             ("hash", "INTEGER"),
             ("width", "INTEGER NOT NULL DEFAULT 0"),
             ("height", "INTEGER NOT NULL DEFAULT 0"),
+            ("app_id", "INTEGER"),
         ] {
             if !existing.iter().any(|c| c == col) {
                 conn.execute_batch(&format!("ALTER TABLE history ADD COLUMN {col} {decl};"))?;
@@ -103,7 +109,7 @@ impl Store {
 
     pub fn load_history(&self) -> Result<Vec<HistoryRow>> {
         let mut st = self.conn.prepare(
-            "SELECT id, kind, CASE WHEN kind = 0 THEN data END, thumb, hash, width, height, used_at, pinned
+            "SELECT id, kind, CASE WHEN kind = 0 THEN data END, thumb, hash, width, height, used_at, pinned, app_id
              FROM history ORDER BY used_at DESC",
         )?;
         let rows = st.query_map([], |r| {
@@ -117,6 +123,7 @@ impl Store {
                 height: r.get(6)?,
                 used_at: r.get(7)?,
                 pinned: r.get(8)?,
+                app_id: r.get(9)?,
             })
         })?;
         rows.collect()
@@ -130,11 +137,14 @@ impl Store {
         width: u32,
         height: u32,
         used_at: i64,
+        app_id: Option<i64>,
     ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO history (kind, data, thumb, hash, width, height, used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![KIND_IMAGE, data, thumb, hash, width, height, used_at],
+            "INSERT INTO history (kind, data, thumb, hash, width, height, used_at, app_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                KIND_IMAGE, data, thumb, hash, width, height, used_at, app_id
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -145,11 +155,23 @@ impl Store {
             .query_row("SELECT data FROM history WHERE id = ?1", [id], |r| r.get(0))
     }
 
-    pub fn insert_history(&self, data: &[u8], used_at: i64) -> Result<i64> {
+    pub fn insert_history(&self, data: &[u8], used_at: i64, app_id: Option<i64>) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO history (data, used_at) VALUES (?1, ?2)",
-            params![data, used_at],
+            "INSERT INTO history (data, used_at, app_id) VALUES (?1, ?2, ?3)",
+            params![data, used_at, app_id],
         )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn load_apps(&self) -> Result<Vec<(i64, Vec<u8>)>> {
+        let mut st = self.conn.prepare("SELECT id, name FROM apps")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn add_app(&self, name: &[u8]) -> Result<i64> {
+        self.conn
+            .execute("INSERT INTO apps (name) VALUES (?1)", [name])?;
         Ok(self.conn.last_insert_rowid())
     }
 
