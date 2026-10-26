@@ -4,6 +4,8 @@
 //! Clic = copiar (la ventana sigue abierta). Doble clic o Enter = pegar en la app anterior.
 
 use crate::image;
+use crate::lock::Lock;
+use crate::mask::mask;
 use crate::settings::{Settings, Theme};
 use crate::settings_ui::{Outcome, SettingsWindow};
 use crate::state::{self, State};
@@ -48,6 +50,7 @@ enum Action {
     DeleteClip(i64),
     ImportPasteBar,
     SaveSettings(Settings),
+    Lock,
     Hide,
     Quit,
 }
@@ -76,11 +79,14 @@ pub struct PegaApp {
     settings_window: Option<SettingsWindow>,
     /// Tema aplicado a egui; se reaplica solo si cambia en los ajustes.
     applied_theme: Option<Theme>,
+    lock: Lock,
 }
 
 impl PegaApp {
     pub fn new(state: Arc<Mutex<State>>) -> Self {
+        let lock = Lock::new(&state.lock().unwrap().settings);
         Self {
+            lock,
             state,
             query: String::new(),
             selected: 0,
@@ -194,7 +200,18 @@ impl egui_software_backend::App for PegaApp {
             });
             self.applied_theme = Some(st.settings.theme);
         }
+        // Bloqueado: solo la pantalla del PIN, sin dibujar nada del contenido.
+        if self.lock.update(&ctx, &st.settings) {
+            if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                actions.push(Action::Hide);
+            }
+            self.lock.show(ui, &st.settings);
+            drop(st);
+            self.apply(&ctx, actions);
+            return;
+        }
         let hotkey = st.settings.hotkey.label();
+        let masked = |t: &str| mask(t, &st.settings.mask_words, st.settings.mask_cards);
         let modal_open = self.editor.is_some() || self.settings_window.is_some();
 
         let just_shown = win::take_shown();
@@ -271,6 +288,9 @@ impl egui_software_backend::App for PegaApp {
                     }
                     if ui.button("Importar de PasteBar").clicked() {
                         actions.push(Action::ImportPasteBar);
+                    }
+                    if !st.settings.pin.is_empty() && ui.button("Bloquear ahora").clicked() {
+                        actions.push(Action::Lock);
                     }
                     if ui.button("Ajustes…").clicked() {
                         self.settings_window = Some(SettingsWindow::new(&st.settings));
@@ -386,13 +406,17 @@ impl egui_software_backend::App for PegaApp {
                                     None => ui.add(
                                         egui::Button::selectable(
                                             selected,
-                                            format!("{pin}{}", preview(&e.text)),
+                                            format!("{pin}{}", preview(&masked(&e.text))),
                                         )
                                         .right_text(right)
                                         .min_size(egui::vec2(0.0, row_h)),
                                     ),
                                 }
-                                .on_hover_text(tooltip(&e.text, app, e.used_at));
+                                .on_hover_text(tooltip(
+                                    &masked(&e.text),
+                                    app,
+                                    e.used_at,
+                                ));
                                 if scroll_to == Some(i) {
                                     resp.scroll_to_me(None);
                                 }
@@ -685,6 +709,7 @@ impl PegaApp {
                     self.flash(&msg, 5.0, ctx);
                 }
                 Action::Hide => win::hide(ctx),
+                Action::Lock => self.lock.lock_now(),
                 Action::Quit => {
                     self.quitting = true;
                     win::quit();
@@ -726,6 +751,7 @@ impl PegaApp {
                         }
                         Action::Copy { .. }
                         | Action::ImportPasteBar
+                        | Action::Lock
                         | Action::Hide
                         | Action::Quit => unreachable!(),
                     }

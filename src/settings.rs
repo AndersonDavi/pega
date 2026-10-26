@@ -140,6 +140,14 @@ pub struct Settings {
     pub keep_days: u32,
     /// Ejecutables cuyas copias no se guardan, en minúsculas ("keepass.exe").
     pub excluded_apps: Vec<String>,
+    /// Palabras que se muestran como puntos.
+    pub mask_words: Vec<String>,
+    /// Oculta números de tarjeta (menos los últimos 4 dígitos).
+    pub mask_cards: bool,
+    /// PIN para desbloquear la ventana; vacío = sin bloqueo.
+    pub pin: String,
+    /// Minutos sin usar Pega para bloquearlo. 0 = solo al iniciar.
+    pub lock_minutes: u32,
 }
 
 impl Default for Settings {
@@ -151,6 +159,10 @@ impl Default for Settings {
             max_images: 100,
             keep_days: 0,
             excluded_apps: Vec::new(),
+            mask_words: Vec::new(),
+            mask_cards: false,
+            pin: String::new(),
+            lock_minutes: 5,
         }
     }
 }
@@ -169,6 +181,10 @@ impl Settings {
             format!("max_images={}", self.max_images),
             format!("keep_days={}", self.keep_days),
             format!("excluded_apps={}", encode_list(&self.excluded_apps)),
+            format!("mask_words={}", encode_list(&self.mask_words)),
+            format!("mask_cards={}", self.mask_cards as u8),
+            format!("pin={}", self.pin),
+            format!("lock_minutes={}", self.lock_minutes),
         ]
         .join("\n")
     }
@@ -197,6 +213,10 @@ impl Settings {
                 "max_images" => s.max_images = value.parse().unwrap_or(s.max_images),
                 "keep_days" => s.keep_days = value.parse().unwrap_or(s.keep_days),
                 "excluded_apps" => s.excluded_apps = decode_list(value),
+                "mask_words" => s.mask_words = decode_list(value),
+                "mask_cards" => s.mask_cards = value == "1",
+                "pin" => s.pin = value.chars().filter(char::is_ascii_digit).collect(),
+                "lock_minutes" => s.lock_minutes = value.parse().unwrap_or(s.lock_minutes),
                 _ => {}
             }
         }
@@ -243,6 +263,10 @@ mod tests {
             max_images: 7,
             keep_days: 30,
             excluded_apps: vec!["keepass.exe".into(), "1password.exe".into()],
+            mask_words: vec!["clave secreta".into(), "Bancolombia".into()],
+            mask_cards: true,
+            pin: "4321".into(),
+            lock_minutes: 10,
         };
         assert!(Settings::decode(&s.encode()) == s);
     }

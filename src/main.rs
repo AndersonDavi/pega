@@ -6,6 +6,8 @@ mod autostart;
 mod crypto;
 mod image;
 mod import;
+mod lock;
+mod mask;
 mod settings;
 mod settings_ui;
 mod state;
