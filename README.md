@@ -2,6 +2,10 @@
 
 Gestor de portapapeles para Windows, nativo y liviano. Escrito en Rust.
 
+> **Beta.** Funciona y se usa a diario, pero aún no está pulido ni firmado (Windows SmartScreen
+> avisará al abrirlo). Los errores y sugerencias son bienvenidos en
+> [Issues](https://github.com/AndersonDavi/pega/issues).
+
 Nace como reemplazo de PasteBar (Tauri + WebView2): la misma idea de historial y tableros,
 pero en un solo proceso sin navegador embebido.
 
