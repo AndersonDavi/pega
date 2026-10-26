@@ -3,6 +3,7 @@
 //!
 //! Clic = copiar (la ventana sigue abierta). Doble clic o Enter = pegar en la app anterior.
 
+use crate::backup;
 use crate::code;
 use crate::image;
 use crate::lock::Lock;
@@ -14,6 +15,7 @@ use crate::win;
 use egui::{Key, Modifiers, RichText, TextWrapMode, ViewportCommand};
 use egui_software_backend::SoftwareBackend;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -62,6 +64,9 @@ enum Action {
     ImportPasteBar,
     SaveSettings(Settings),
     Lock,
+    Backup,
+    PickRestore,
+    Restore(PathBuf),
     Hide,
     Quit,
 }
@@ -105,6 +110,8 @@ pub struct PegaApp {
     applied_theme: Option<Theme>,
     lock: Lock,
     styled: bool,
+    /// Respaldo elegido, esperando confirmación para restaurar.
+    confirm_restore: Option<PathBuf>,
 }
 
 /// Espaciado, esquinas y el azul del ícono como acento, para ambos temas.
@@ -135,6 +142,7 @@ impl PegaApp {
         Self {
             lock,
             styled: false,
+            confirm_restore: None,
             state,
             query: String::new(),
             selected: 0,
@@ -233,7 +241,10 @@ impl egui_software_backend::App for PegaApp {
         let ctx = ui.ctx().clone();
         let mut actions: Vec<Action> = Vec::new();
         let state = self.state.clone();
-        let st = state.lock().unwrap();
+        let mut st = state.lock().unwrap();
+        if let Some(notice) = st.notice.take() {
+            self.flash(&notice, 8.0, &ctx);
+        }
 
         // Cerrar la ventana la oculta (sigue escuchando); "Salir" la cierra de verdad.
         // Sin atajo global no habría forma de volver a abrirla, así que ahí sí se cierra.
@@ -348,6 +359,12 @@ impl egui_software_backend::App for PegaApp {
                     }
                     if !st.settings.pin.is_empty() && ui.button("Bloquear ahora").clicked() {
                         actions.push(Action::Lock);
+                    }
+                    if ui.button("Crear respaldo…").clicked() {
+                        actions.push(Action::Backup);
+                    }
+                    if ui.button("Restaurar respaldo…").clicked() {
+                        actions.push(Action::PickRestore);
                     }
                     if ui.button("Ajustes…").clicked() {
                         self.settings_window = Some(SettingsWindow::new(&st.settings));
@@ -804,6 +821,33 @@ impl egui_software_backend::App for PegaApp {
             }
         }
 
+        if let Some(path) = &self.confirm_restore {
+            let mut close = false;
+            egui::Window::new("Restaurar respaldo")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(&ctx, |ui| {
+                    ui.label(format!(
+                        "Se reemplazarán el historial, los tableros y los ajustes por los de:\n{}",
+                        path.display()
+                    ));
+                    ui.weak("La base actual se guarda aparte, por si acaso. Pega se reiniciará.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Restaurar").clicked() {
+                            actions.push(Action::Restore(path.clone()));
+                            close = true;
+                        }
+                        if ui.button("Cancelar").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if close {
+                self.confirm_restore = None;
+            }
+        }
+
         if let Some(win) = &mut self.settings_window {
             match win.show(&ctx) {
                 Outcome::Open => {}
@@ -868,6 +912,40 @@ impl PegaApp {
                 }
                 Action::Hide => win::hide(ctx),
                 Action::Lock => self.lock.lock_now(),
+                Action::Backup => {
+                    let Some(path) =
+                        backup::file_dialog(win::app_hwnd(), true, &backup::default_name())
+                    else {
+                        continue;
+                    };
+                    let result = self.state.lock().unwrap().backup_to(&path);
+                    match result {
+                        Ok(()) => self.flash(
+                            &format!("Respaldo guardado en {}", path.display()),
+                            5.0,
+                            ctx,
+                        ),
+                        Err(e) => {
+                            self.flash(&format!("No se pudo crear el respaldo: {e}"), 6.0, ctx)
+                        }
+                    }
+                }
+                Action::PickRestore => {
+                    let Some(path) = backup::file_dialog(win::app_hwnd(), false, "") else {
+                        continue;
+                    };
+                    match backup::validate(&path) {
+                        Ok(()) => self.confirm_restore = Some(path),
+                        Err(e) => self.flash(&e, 6.0, ctx),
+                    }
+                }
+                Action::Restore(path) => {
+                    self.state.lock().unwrap().flush();
+                    match backup::restart_with_restore(&path) {
+                        Ok(()) => win::quit(),
+                        Err(e) => self.flash(&e, 6.0, ctx),
+                    }
+                }
                 Action::Quit => {
                     self.quitting = true;
                     win::quit();
@@ -917,6 +995,9 @@ impl PegaApp {
                         Action::Copy { .. }
                         | Action::ImportPasteBar
                         | Action::Lock
+                        | Action::Backup
+                        | Action::PickRestore
+                        | Action::Restore(_)
                         | Action::Hide
                         | Action::Quit => unreachable!(),
                     }

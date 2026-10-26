@@ -100,6 +100,8 @@ pub struct State {
     pub settings: Settings,
     pub hotkey_ok: bool,
     pub error: Option<String>,
+    /// Aviso para mostrar una vez en la interfaz (por ejemplo, tras restaurar).
+    pub notice: Option<String>,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -229,6 +231,7 @@ impl State {
             settings,
             hotkey_ok: false,
             error: None,
+            notice: None,
         };
         state.encrypt_legacy_names(&plain_boards, &plain_clips)?;
         let mut state = state;
@@ -251,6 +254,16 @@ impl State {
             self.store.checkpoint()?;
         }
         Ok(())
+    }
+
+    pub fn backup_to(&mut self, path: &std::path::Path) -> Result<(), String> {
+        self.store.backup_to(path).map_err(|e| e.to_string())
+    }
+
+    /// Antes de reiniciar para restaurar: deja todo escrito en el archivo principal.
+    pub fn flush(&mut self) {
+        let r = self.store.checkpoint();
+        self.report(r);
     }
 
     /// Guarda ajustes nuevos y aplica los límites. Devuelve si cambió el atajo.

@@ -3,6 +3,7 @@
 
 mod app;
 mod autostart;
+mod backup;
 mod code;
 mod crypto;
 mod image;
@@ -37,18 +38,36 @@ fn window_icon() -> Arc<egui::IconData> {
 }
 
 fn main() {
-    if win::already_running() {
+    let args: Vec<String> = std::env::args().collect();
+    // --restore <archivo>: lo lanza la instancia anterior justo antes de cerrarse.
+    let restore = args
+        .iter()
+        .position(|a| a == backup::RESTORE_ARG)
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from);
+    if restore.is_some() {
+        if !win::wait_for_previous_instance() {
+            return;
+        }
+    } else if win::already_running() {
         win::signal_existing();
         return;
     }
     autostart::refresh();
     let dir = data_dir();
     std::fs::create_dir_all(&dir).expect("no se pudo crear %APPDATA%\\Pega");
+    let notice = restore.map(|b| match backup::apply_restore(&dir, &b) {
+        Ok(kept) => format!(
+            "Respaldo restaurado. La base anterior quedó en {}",
+            kept.display()
+        ),
+        Err(e) => format!("No se restauró el respaldo: {e}"),
+    });
     let store =
         store::Store::open(&dir.join("pega.db")).expect("no se pudo abrir la base de datos");
-    let state = Arc::new(Mutex::new(
-        state::State::load(store).expect("no se pudo leer la base de datos"),
-    ));
+    let mut loaded = state::State::load(store).expect("no se pudo leer la base de datos");
+    loaded.notice = notice;
+    let state = Arc::new(Mutex::new(loaded));
 
     // `--hidden` para arrancar con Windows sin mostrar la ventana.
     let hidden = std::env::args().any(|a| a == "--hidden");

@@ -95,9 +95,29 @@ pub fn take_shown() -> bool {
 /// true si ya hay otra instancia corriendo (el mutex vive hasta que el proceso termina).
 pub fn already_running() -> bool {
     unsafe {
-        CreateMutexW(ptr::null(), 0, wide("Local\\PegaSingleInstance").as_ptr());
-        GetLastError() == ERROR_ALREADY_EXISTS
+        let h = CreateMutexW(ptr::null(), 0, wide("Local\\PegaSingleInstance").as_ptr());
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            CloseHandle(h);
+            return true;
+        }
+        false
     }
+}
+
+/// Al reiniciar (restaurar un respaldo), espera a que la instancia anterior termine.
+pub fn wait_for_previous_instance() -> bool {
+    for _ in 0..50 {
+        if !already_running() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+/// HWND de la ventana principal, para que los diálogos de archivo sean modales.
+pub fn app_hwnd() -> isize {
+    APP_HWND.load(Relaxed)
 }
 
 /// Le pide a la instancia que ya corre que se muestre.

@@ -331,6 +331,14 @@ impl Store {
         self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
     }
 
+    /// Copia compacta y consistente de toda la base (los datos siguen cifrados).
+    pub fn backup_to(&self, path: &Path) -> Result<()> {
+        let _ = std::fs::remove_file(path);
+        self.conn
+            .execute("VACUUM INTO ?1", [path.to_string_lossy()])
+            .map(|_| ())
+    }
+
     /// Devuelve al sistema las páginas que quedaron libres tras borrar.
     fn reclaim(&self) -> Result<()> {
         self.conn.execute_batch("PRAGMA incremental_vacuum;")
