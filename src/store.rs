@@ -31,6 +31,8 @@ pub struct ClipRow {
     pub board_id: i64,
     pub name: Name,
     pub data: Vec<u8>,
+    /// Última edición (ms); la sincronización se queda con la más nueva.
+    pub updated_at: i64,
 }
 
 /// Nombre de tablero o clip: cifrado, o en claro si viene de una versión anterior.
@@ -116,6 +118,15 @@ impl Store {
             .collect::<Result<_>>()?;
         if !board_cols.iter().any(|c| c == "color") {
             conn.execute_batch("ALTER TABLE boards ADD COLUMN color INTEGER;")?;
+        }
+        let clip_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('clips')")?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_>>()?;
+        if !clip_cols.iter().any(|c| c == "updated_at") {
+            conn.execute_batch(
+                "ALTER TABLE clips ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;",
+            )?;
         }
         Ok(Self { conn })
     }
@@ -237,6 +248,12 @@ impl Store {
         Ok(())
     }
 
+    pub fn delete_meta(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM meta WHERE key = ?1", [key])?;
+        Ok(())
+    }
+
     pub fn load_boards(&self) -> Result<Vec<(i64, Name, Option<u32>)>> {
         let mut st = self
             .conn
@@ -277,13 +294,14 @@ impl Store {
     pub fn load_clips(&self) -> Result<Vec<ClipRow>> {
         let mut st = self
             .conn
-            .prepare("SELECT id, board_id, name, data FROM clips ORDER BY pos, id")?;
+            .prepare("SELECT id, board_id, name, data, updated_at FROM clips ORDER BY pos, id")?;
         let rows = st.query_map([], |r| {
             Ok(ClipRow {
                 id: r.get(0)?,
                 board_id: r.get(1)?,
                 name: name_at(r, 2)?,
                 data: r.get(3)?,
+                updated_at: r.get(4)?,
             })
         })?;
         rows.collect()
@@ -311,18 +329,33 @@ impl Store {
         self.reclaim()
     }
 
-    pub fn add_clip(&self, board_id: i64, name: &[u8], data: &[u8], pos: i64) -> Result<i64> {
+    pub fn add_clip(
+        &self,
+        board_id: i64,
+        name: &[u8],
+        data: &[u8],
+        pos: i64,
+        updated_at: i64,
+    ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO clips (board_id, name, data, pos) VALUES (?1, ?2, ?3, ?4)",
-            params![board_id, name, data, pos],
+            "INSERT INTO clips (board_id, name, data, pos, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![board_id, name, data, pos, updated_at],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
 
-    pub fn update_clip(&self, id: i64, name: &[u8], data: &[u8]) -> Result<()> {
+    pub fn update_clip(&self, id: i64, name: &[u8], data: &[u8], updated_at: i64) -> Result<()> {
         self.conn.execute(
-            "UPDATE clips SET name = ?2, data = ?3 WHERE id = ?1",
-            params![id, name, data],
+            "UPDATE clips SET name = ?2, data = ?3, updated_at = ?4 WHERE id = ?1",
+            params![id, name, data, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn touch_clip(&self, id: i64, updated_at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE clips SET updated_at = ?2 WHERE id = ?1",
+            params![id, updated_at],
         )?;
         Ok(())
     }

@@ -52,6 +52,9 @@ pero en un solo proceso sin navegador embebido.
 - **Pegado rápido**: `Ctrl+1…9` pega las primeras entradas; varias seleccionadas con `Ctrl+clic`
   se pegan en secuencia separadas por Tab (formularios); `Ctrl+Alt+Shift+V` pega sin formato.
 - **QR** de un texto o clip para pasarlo al celular.
+- **Sincronizar entre PCs** a través de una carpeta que ya sincronices (OneDrive, Dropbox, Google Drive),
+  sin servidor y cifrado de punta a punta con una contraseña común: tableros, clips y textos del
+  historial, incluidos los borrados. Las imágenes y lo que se borra solo se quedan en cada PC.
 - **OCR** opcional de las capturas (con el OCR de Windows, en `pega-ocr.exe`, un proceso aparte que
   se cierra al terminar): el texto de la imagen entra en la búsqueda.
 
@@ -69,6 +72,9 @@ pero en un solo proceso sin navegador embebido.
 - Los **códigos de un solo uso** (4 a 6 dígitos) y lo copiado desde **apps sensibles** se borran solos
   a los N minutos (5 por defecto).
 - Los respaldos siguen cifrados: solo los puede restaurar el mismo usuario de Windows.
+- La **sincronización** escribe en la carpeta un archivo por PC cifrado con XChaCha20-Poly1305
+  (clave Argon2id de la contraseña común); la nube solo ve datos cifrados. En cada PC la clave
+  queda guardada con DPAPI, así que la contraseña se escribe una vez.
 - **Exportar** a un archivo `.pega` con contraseña (XChaCha20-Poly1305 + Argon2id) para llevar
   el historial y los tableros a otro PC o usuario.
 - Los datos viven en `%APPDATA%\Pega\pega.db`. **Modo portable**: con un archivo llamado `portable`

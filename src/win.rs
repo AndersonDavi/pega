@@ -217,6 +217,16 @@ fn find_app_window() -> isize {
 /// Arranca el hilo Win32. Se llama desde el hilo de la interfaz, con la ventana ya creada.
 pub fn start(state: Arc<Mutex<State>>, ctx: egui::Context) {
     APP_HWND.store(find_app_window(), Relaxed);
+    let repaint = ctx.clone();
+    crate::sync::start(state.clone(), move || {
+        repaint.request_repaint();
+        reschedule_expiry();
+        // Con la ventana oculta, lo que usó la mezcla vuelve a Windows.
+        let app = app_hwnd() as HWND;
+        if !app.is_null() && unsafe { IsWindowVisible(app) } == 0 {
+            trim_memory();
+        }
+    });
     let _ = SHARED.set(Shared { state, ctx });
     thread::Builder::new()
         .name("pega-win32".into())
@@ -279,12 +289,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if changed {
                 shared.ctx.request_repaint();
                 unsafe { schedule_expiry(hwnd) };
+                crate::sync::poke();
             }
             0
         }
         WM_TIMER if wparam == TIMER_EXPIRE => {
             if shared.state.lock().unwrap().purge_expired() {
                 shared.ctx.request_repaint();
+                crate::sync::poke();
             }
             unsafe { schedule_expiry(hwnd) };
             0
@@ -296,6 +308,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_RELOAD => {
             shared.state.lock().unwrap().reload();
             unsafe { schedule_expiry(hwnd) };
+            crate::sync::poke();
             shared.ctx.request_repaint();
             0
         }

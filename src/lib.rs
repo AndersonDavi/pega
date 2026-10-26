@@ -21,6 +21,7 @@ pub mod settings;
 pub mod settings_ui;
 pub mod state;
 pub mod store;
+pub mod sync;
 pub mod template;
 pub mod transform;
 pub mod win;

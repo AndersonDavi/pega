@@ -84,6 +84,9 @@ enum Action {
     Restore(PathBuf),
     Hide,
     Quit,
+    StartSync,
+    EnableSync(PathBuf, String),
+    DisableSync,
 }
 
 /// Ancho reservado a la derecha del título de un tablero para "+ Clip" y "…".
@@ -174,6 +177,15 @@ struct PasswordDialog {
     focus: bool,
 }
 
+/// Activar la sincronización: carpeta y contraseña común.
+#[derive(Default)]
+struct SyncDialog {
+    dir: String,
+    pass: String,
+    error: Option<String>,
+    focus: bool,
+}
+
 #[allow(non_snake_case)]
 fn EXPORT_FILTER() -> &'static str {
     t(
@@ -230,6 +242,7 @@ pub struct PegaApp {
     /// QR abierto; la textura se suelta al cerrarlo.
     qr: Option<egui::TextureHandle>,
     password: Option<PasswordDialog>,
+    sync_dialog: Option<SyncDialog>,
 }
 
 /// Espaciado, esquinas y el azul del ícono como acento, para ambos temas.
@@ -267,6 +280,7 @@ impl PegaApp {
             multi: Vec::new(),
             qr: None,
             password: None,
+            sync_dialog: None,
             state,
             query: String::new(),
             selected: 0,
@@ -542,6 +556,12 @@ impl egui_software_backend::App for PegaApp {
                     }
                     if ui.button(t("Importar exportación…", "Import export…")).clicked() {
                         actions.push(Action::StartImport);
+                    }
+                    if ui
+                        .button(t("Sincronizar entre PCs…", "Sync between PCs…"))
+                        .clicked()
+                    {
+                        actions.push(Action::StartSync);
                     }
                     if ui.button(t("Ajustes…", "Settings…")).clicked() {
                         self.settings_window = Some(SettingsWindow::new(&st.settings));
@@ -1165,6 +1185,102 @@ impl egui_software_backend::App for PegaApp {
             }
         }
 
+        if let Some(dlg) = &mut self.sync_dialog {
+            let mut close = false;
+            egui::Window::new(t("Sincronizar entre PCs", "Sync between PCs"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(&ctx, |ui| {
+                    ui.set_max_width(380.0);
+                    let esc = ui.input(|i| i.key_pressed(Key::Escape));
+                    match &st.sync {
+                        Some(cfg) => {
+                            let status = crate::sync::status();
+                            ui.label(tr!("Carpeta: {}", "Folder: {}", cfg.dir.display()));
+                            if status.peers.is_empty() {
+                                ui.weak(t(
+                                    "Todavía no hay otros PCs: actívala en ellos con la misma carpeta y contraseña.",
+                                    "No other PCs yet: turn it on there with the same folder and password.",
+                                ));
+                            } else {
+                                ui.label(tr!("Con: {}", "With: {}", status.peers.join(", ")));
+                            }
+                            if let Some(at) = status.last_ok {
+                                ui.weak(tr!("Última sincronización: {}", "Last sync: {}", ago(at)));
+                            }
+                            if let Some(e) = &status.error {
+                                ui.colored_label(ui.visuals().error_fg_color, e);
+                            }
+                            ui.horizontal(|ui| {
+                                if ui.button(t("Sincronizar ahora", "Sync now")).clicked() {
+                                    crate::sync::poke();
+                                }
+                                if ui.add(danger_button(t("Desactivar", "Turn off"))).clicked() {
+                                    actions.push(Action::DisableSync);
+                                }
+                                if ui.button(t("Cerrar", "Close")).clicked() || esc {
+                                    close = true;
+                                }
+                            });
+                            // El estado lo actualiza otro hilo: mirar de nuevo en un rato.
+                            ctx.request_repaint_after(Duration::from_secs(2));
+                        }
+                        None => {
+                            ui.label(t(
+                                "Elige una carpeta que ya se sincronice (OneDrive, Dropbox, Google Drive) y una \
+                                 contraseña. Usa las mismas en tus otros PCs.",
+                                "Pick a folder that already syncs (OneDrive, Dropbox, Google Drive) and a \
+                                 password. Use the same ones on your other PCs.",
+                            ));
+                            ui.weak(t(
+                                "Viajan tableros, clips y textos del historial, cifrados con tu contraseña. \
+                                 Las imágenes y lo que se borra solo se quedan en cada PC.",
+                                "Boards, clips and text history travel, encrypted with your password. \
+                                 Images and auto-deleted items stay on each PC.",
+                            ));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut dlg.dir)
+                                    .hint_text(t("Carpeta", "Folder"))
+                                    .desired_width(360.0),
+                            );
+                            let pass = ui.add(
+                                egui::TextEdit::singleline(&mut dlg.pass)
+                                    .password(true)
+                                    .hint_text(t("Contraseña común (mín. 8)", "Shared password (min. 8)"))
+                                    .desired_width(360.0),
+                            );
+                            if dlg.focus {
+                                pass.request_focus();
+                                dlg.focus = false;
+                            }
+                            if let Some(e) = &dlg.error {
+                                ui.colored_label(ui.visuals().error_fg_color, e);
+                            }
+                            let enter = ui.input(|i| i.key_pressed(Key::Enter));
+                            ui.horizontal(|ui| {
+                                if ui.button(t("Activar", "Turn on")).clicked() || enter {
+                                    if dlg.dir.trim().is_empty() {
+                                        dlg.error = Some(t("Indica la carpeta.", "Enter the folder.").into());
+                                    } else {
+                                        actions.push(Action::EnableSync(
+                                            PathBuf::from(dlg.dir.trim()),
+                                            std::mem::take(&mut dlg.pass),
+                                        ));
+                                    }
+                                }
+                                if ui.button(t("Cancelar", "Cancel")).clicked() || esc {
+                                    close = true;
+                                }
+                            });
+                        }
+                    }
+                });
+            if close {
+                self.sync_dialog = None;
+            }
+        }
+
         if let Some(dlg) = &mut self.password {
             let mut close = false;
             let title = match dlg.import {
@@ -1379,6 +1495,8 @@ impl egui_software_backend::App for PegaApp {
         // cuadro) y se devuelve la RAM física. Al volver se recrean las que se vean.
         if win::take_hiding() {
             self.thumbs.clear();
+            // Lo editado mientras la ventana estuvo abierta, a los otros PCs.
+            crate::sync::poke();
             self.state.lock().unwrap().release_memory();
             win::trim_memory();
         }
@@ -1386,6 +1504,11 @@ impl egui_software_backend::App for PegaApp {
 
     fn on_exit(&mut self, _ctx: &egui::Context) {
         win::remove_tray();
+        // Lo último que se cambió llega a los otros PCs aunque se cierre enseguida.
+        let cfg = self.state.lock().unwrap().sync.clone();
+        if let Some(cfg) = cfg {
+            crate::sync::write_own(&self.state, &cfg, &mut crate::sync::Tracker::default());
+        }
     }
 }
 
@@ -1469,6 +1592,33 @@ impl PegaApp {
                     if let Some(img) = qr::image(&text, 5) {
                         self.qr = Some(ctx.load_texture("qr", img, egui::TextureOptions::NEAREST));
                     }
+                }
+                Action::StartSync => {
+                    self.sync_dialog = Some(SyncDialog {
+                        dir: crate::sync::suggested_dir()
+                            .map(|d| d.display().to_string())
+                            .unwrap_or_default(),
+                        focus: true,
+                        ..Default::default()
+                    });
+                }
+                Action::EnableSync(dir, pass) => match crate::sync::enable(&dir, &pass) {
+                    Ok(cfg) => {
+                        self.state.lock().unwrap().set_sync(Some(cfg));
+                        crate::sync::poke();
+                        self.flash(t("Sincronización activada", "Sync turned on"), 3.0, ctx);
+                    }
+                    Err(e) => {
+                        if let Some(d) = &mut self.sync_dialog {
+                            d.error = Some(e);
+                        }
+                    }
+                },
+                Action::DisableSync => {
+                    self.state.lock().unwrap().set_sync(None);
+                    crate::sync::poke();
+                    self.sync_dialog = None;
+                    self.flash(t("Sincronización desactivada", "Sync turned off"), 3.0, ctx);
                 }
                 Action::StartExport => {
                     self.password = Some(PasswordDialog {
@@ -1648,10 +1798,14 @@ impl PegaApp {
                         | Action::PickRestore
                         | Action::Restore(_)
                         | Action::Hide
-                        | Action::Quit => unreachable!(),
+                        | Action::Quit
+                        | Action::StartSync
+                        | Action::EnableSync(..)
+                        | Action::DisableSync => unreachable!(),
                     }
                     // Fijar, borrar o cambiar ajustes mueve el próximo vencimiento.
                     win::reschedule_expiry();
+                    crate::sync::poke();
                 }
             }
         }

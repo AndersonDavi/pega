@@ -30,7 +30,7 @@ pub struct ImportSummary {
     pub hotkeys_changed: bool,
 }
 
-fn random(buf: &mut [u8]) -> Result<(), String> {
+pub(crate) fn random(buf: &mut [u8]) -> Result<(), String> {
     let status = unsafe {
         BCryptGenRandom(
             std::ptr::null_mut(),
@@ -46,7 +46,7 @@ fn random(buf: &mut [u8]) -> Result<(), String> {
     }
 }
 
-fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], String> {
+pub(crate) fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], String> {
     let params = Params::new(Params::DEFAULT_M_COST, Params::DEFAULT_T_COST, 1, Some(32))
         .map_err(|e| e.to_string())?;
     let mut key = [0u8; 32];

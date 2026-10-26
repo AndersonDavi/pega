@@ -93,6 +93,8 @@ pub struct Clip {
     pub name: String,
     pub text: String,
     pub key: String,
+    /// Última edición (ms), para la sincronización.
+    pub updated_at: i64,
 }
 
 pub struct State {
@@ -109,9 +111,39 @@ pub struct State {
     pub error: Option<String>,
     /// Aviso para mostrar una vez en la interfaz (por ejemplo, tras restaurar).
     pub notice: Option<String>,
+    /// Borrados recientes (clave de sincronización, momento) para propagarlos a otros PCs.
+    pub tombs: Vec<(i64, i64)>,
+    /// Sincronización entre PCs, si está activada.
+    pub sync: Option<crate::sync::Config>,
 }
 
 const SETTINGS_KEY: &str = "settings";
+const TOMBS_KEY: &str = "sync_tombs";
+const SYNC_KEY: &str = "sync";
+/// Los borrados se recuerdan 30 días: suficiente para que los otros PCs se enteren.
+const TOMB_DAYS: i64 = 30;
+
+/// Identidad de algo para la sincronización (FNV-1a de 64 bits sobre tipo + contenido).
+fn sync_key(kind: u8, s: &str) -> i64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in std::iter::once(kind).chain(s.bytes()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h as i64
+}
+
+pub fn text_sync_key(text: &str) -> i64 {
+    sync_key(b't', text)
+}
+
+pub fn clip_sync_key(board: &str, name: &str) -> i64 {
+    sync_key(b'c', &format!("{}/{}", fold(board), fold(name)))
+}
+
+pub fn board_sync_key(name: &str) -> i64 {
+    sync_key(b'b', &fold(name))
+}
 
 pub fn now() -> i64 {
     SystemTime::now()
@@ -159,6 +191,8 @@ struct Loaded {
     settings: Settings,
     plain_boards: Vec<i64>,
     plain_clips: Vec<i64>,
+    tombs: Vec<(i64, i64)>,
+    sync: Option<crate::sync::Config>,
 }
 
 impl State {
@@ -171,6 +205,8 @@ impl State {
             settings,
             plain_boards,
             plain_clips,
+            tombs,
+            sync,
         } = Self::read(&store)?;
         crate::i18n::apply(settings.language);
         let state = Self {
@@ -184,6 +220,8 @@ impl State {
             plain_hotkey_ok: true,
             error: None,
             notice: None,
+            tombs,
+            sync,
         };
         state.encrypt_legacy_names(&plain_boards, &plain_clips)?;
         let mut state = state;
@@ -204,6 +242,7 @@ impl State {
         self.boards = fresh.boards;
         self.clips = fresh.clips;
         self.apps = fresh.apps;
+        self.tombs = fresh.tombs;
         self.refresh_sensitive();
     }
 
@@ -293,6 +332,7 @@ impl State {
                     name,
                     text,
                     key,
+                    updated_at: r.updated_at,
                 })
             })
             .collect();
@@ -301,6 +341,24 @@ impl State {
             .and_then(|b| crypto::unprotect_str(&b))
             .map(|t| Settings::decode(&t))
             .unwrap_or_default();
+        let cutoff = now() - TOMB_DAYS * 86_400_000;
+        let tombs = store
+            .get_meta(TOMBS_KEY)?
+            .and_then(|b| crypto::unprotect_str(&b))
+            .map(|t| {
+                t.lines()
+                    .filter_map(|l| {
+                        let (k, at) = l.split_once(' ')?;
+                        Some((k.parse().ok()?, at.parse().ok()?))
+                    })
+                    .filter(|&(_, at): &(i64, i64)| at >= cutoff)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let sync = store
+            .get_meta(SYNC_KEY)?
+            .and_then(|b| crypto::unprotect_str(&b))
+            .and_then(|t| crate::sync::Config::decode(&t));
         Ok(Loaded {
             history,
             boards,
@@ -309,6 +367,8 @@ impl State {
             settings,
             plain_boards,
             plain_clips,
+            tombs,
+            sync,
         })
     }
 
@@ -524,10 +584,23 @@ impl State {
         if drop.is_empty() {
             return false;
         }
-        self.history.retain(|e| !drop.contains(&e.id));
-        let r = self.store.delete_history(&drop);
-        self.report(r);
+        // Si otro PC alcanzó a recibirlo, que también lo borre.
+        self.tomb_entries(&drop);
+        self.remove_entries(&drop);
         true
+    }
+
+    /// Activa (Some) o desactiva la sincronización y guarda la configuración cifrada.
+    pub fn set_sync(&mut self, config: Option<crate::sync::Config>) {
+        let r = match &config {
+            Some(c) => match crypto::protect_str(&c.encode()) {
+                Some(enc) => self.store.set_meta(SYNC_KEY, &enc),
+                None => return,
+            },
+            None => self.store.delete_meta(SYNC_KEY),
+        };
+        self.report(r);
+        self.sync = config;
     }
 
     /// Borra lo no fijado más viejo que `keep_days` (0 = nunca).
@@ -799,9 +872,8 @@ impl State {
     }
 
     pub fn delete_entry(&mut self, id: i64) {
-        self.history.retain(|e| e.id != id);
-        let r = self.store.delete_history(&[id]);
-        self.report(r);
+        self.tomb_entries(&[id]);
+        self.remove_entries(&[id]);
     }
 
     pub fn clear_history(&mut self) {
@@ -811,9 +883,70 @@ impl State {
             .filter(|e| !e.pinned)
             .map(|e| e.id)
             .collect();
-        self.history.retain(|e| e.pinned);
-        let r = self.store.delete_history(&ids);
+        self.tomb_entries(&ids);
+        self.remove_entries(&ids);
+    }
+
+    /// Borra entradas sin anotarlas para la sincronización (lo usa también la mezcla).
+    pub(crate) fn remove_entries(&mut self, ids: &[i64]) {
+        if ids.is_empty() {
+            return;
+        }
+        self.history.retain(|e| !ids.contains(&e.id));
+        let r = self.store.delete_history(ids);
         self.report(r);
+    }
+
+    /// Anota los textos borrados, para que se borren también en los otros PCs.
+    fn tomb_entries(&mut self, ids: &[i64]) {
+        let keys: Vec<i64> = self
+            .history
+            .iter()
+            .filter(|e| e.image.is_none() && ids.contains(&e.id))
+            .map(|e| text_sync_key(&e.text))
+            .collect();
+        self.tomb(keys);
+    }
+
+    /// Clips de un tablero, como claves de sincronización.
+    fn clip_keys_of_board(&self, board_id: i64) -> Vec<i64> {
+        let Some(board) = self.boards.iter().find(|b| b.id == board_id) else {
+            return Vec::new();
+        };
+        self.clips
+            .iter()
+            .filter(|c| c.board_id == board_id)
+            .map(|c| clip_sync_key(&board.name, &c.name))
+            .collect()
+    }
+
+    fn clip_key(&self, id: i64) -> Option<i64> {
+        let c = self.clips.iter().find(|c| c.id == id)?;
+        let b = self.boards.iter().find(|b| b.id == c.board_id)?;
+        Some(clip_sync_key(&b.name, &c.name))
+    }
+
+    /// Registra borrados (clave, momento) y los guarda cifrados. Se olvidan a los 30 días.
+    fn tomb(&mut self, keys: Vec<i64>) {
+        if keys.is_empty() {
+            return;
+        }
+        let at = now();
+        self.tombs.retain(|(k, _)| !keys.contains(k));
+        self.tombs.extend(keys.into_iter().map(|k| (k, at)));
+        self.save_tombs();
+    }
+
+    fn save_tombs(&mut self) {
+        let text: String = self
+            .tombs
+            .iter()
+            .map(|(k, at)| format!("{k} {at}\n"))
+            .collect();
+        if let Some(enc) = crypto::protect_str(&text) {
+            let r = self.store.set_meta(TOMBS_KEY, &enc);
+            self.report(r);
+        }
     }
 
     pub fn add_board(&mut self, name: &str) -> Option<i64> {
@@ -867,6 +1000,15 @@ impl State {
         let Some(from) = self.clips.iter().position(|c| c.id == id) else {
             return;
         };
+        // Cambiar de tablero es, para los otros PCs, borrarlo de uno y crearlo en otro.
+        if self.clips[from].board_id != board_id {
+            let old = self.clip_key(id);
+            self.tomb(old.into_iter().collect());
+            let at = now();
+            self.clips[from].updated_at = at;
+            let r = self.store.touch_clip(id, at);
+            self.report(r);
+        }
         let mut clip = self.clips.remove(from);
         clip.board_id = board_id;
         // Posición en el vector: antes de `before`, o después del último clip del tablero.
@@ -894,6 +1036,25 @@ impl State {
         let Some(enc) = crypto::protect_str(name) else {
             return;
         };
+        // Para los otros PCs: el tablero viejo y sus clips se borran; los nuevos llegan solos.
+        if let Some(old) = self
+            .boards
+            .iter()
+            .find(|b| b.id == id)
+            .map(|b| b.name.clone())
+        {
+            if fold(&old) != fold(name) {
+                let mut keys = self.clip_keys_of_board(id);
+                keys.push(board_sync_key(&old));
+                self.tomb(keys);
+                let at = now();
+                for c in self.clips.iter_mut().filter(|c| c.board_id == id) {
+                    c.updated_at = at;
+                    let r = self.store.touch_clip(c.id, at);
+                    r.map_err(|e| self.error = Some(e.to_string())).ok();
+                }
+            }
+        }
         let r = self.store.rename_board(id, &enc);
         self.report(r);
         if let Some(b) = self.boards.iter_mut().find(|b| b.id == id) {
@@ -902,6 +1063,15 @@ impl State {
     }
 
     pub fn delete_board(&mut self, id: i64) {
+        let mut keys = self.clip_keys_of_board(id);
+        if let Some(b) = self.boards.iter().find(|b| b.id == id) {
+            keys.push(board_sync_key(&b.name));
+        }
+        self.tomb(keys);
+        self.remove_board(id);
+    }
+
+    pub(crate) fn remove_board(&mut self, id: i64) {
         let r = self.store.delete_board(id);
         self.report(r);
         self.boards.retain(|b| b.id != id);
@@ -910,6 +1080,30 @@ impl State {
 
     /// Crea (id = None) o edita un clip de tablero.
     pub fn save_clip(&mut self, id: Option<i64>, board_id: i64, name: &str, text: &str) {
+        // Renombrar un clip: en los otros PCs se borra el del nombre viejo.
+        if let Some(id) = id {
+            let renamed = self
+                .clips
+                .iter()
+                .find(|c| c.id == id)
+                .is_some_and(|c| fold(&c.name) != fold(name));
+            if renamed {
+                let old = self.clip_key(id);
+                self.tomb(old.into_iter().collect());
+            }
+        }
+        self.save_clip_at(id, board_id, name, text, now());
+    }
+
+    /// Igual que `save_clip`, con la fecha de edición dada (la mezcla conserva la del otro PC).
+    pub(crate) fn save_clip_at(
+        &mut self,
+        id: Option<i64>,
+        board_id: i64,
+        name: &str,
+        text: &str,
+        updated_at: i64,
+    ) {
         let (Some(data), Some(enc_name)) = (crypto::protect_str(text), crypto::protect_str(name))
         else {
             self.error = Some(
@@ -924,17 +1118,20 @@ impl State {
         let key = fold(&format!("{name} {text}"));
         match id {
             Some(id) => {
-                let r = self.store.update_clip(id, &enc_name, &data);
+                let r = self.store.update_clip(id, &enc_name, &data, updated_at);
                 self.report(r);
                 if let Some(c) = self.clips.iter_mut().find(|c| c.id == id) {
                     c.name = name.to_owned();
                     c.text = text.to_owned();
                     c.key = key;
+                    c.updated_at = updated_at;
                 }
             }
             None => {
                 let pos = self.clips.iter().filter(|c| c.board_id == board_id).count() as i64;
-                let r = self.store.add_clip(board_id, &enc_name, &data, pos);
+                let r = self
+                    .store
+                    .add_clip(board_id, &enc_name, &data, pos, updated_at);
                 if let Some(id) = self.report(r) {
                     self.clips.push(Clip {
                         id,
@@ -942,6 +1139,7 @@ impl State {
                         name: name.to_owned(),
                         text: text.to_owned(),
                         key,
+                        updated_at,
                     });
                 }
             }
@@ -949,6 +1147,12 @@ impl State {
     }
 
     pub fn delete_clip(&mut self, id: i64) {
+        let key = self.clip_key(id);
+        self.tomb(key.into_iter().collect());
+        self.remove_clip(id);
+    }
+
+    pub(crate) fn remove_clip(&mut self, id: i64) {
         let r = self.store.delete_clip(id);
         self.report(r);
         self.clips.retain(|c| c.id != id);
