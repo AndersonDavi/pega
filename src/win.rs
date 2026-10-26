@@ -659,30 +659,48 @@ fn capture_image(state: &Mutex<State>, dib: &[u8], app: Option<String>) -> bool 
         return false;
     };
     let hash = image::hash(&img);
-    if let Some(changed) = state.lock().unwrap().bump_image(hash) {
-        return changed;
-    }
-    let Some(prepared) = state::prepare_image(&img, hash, app) else {
-        return false;
+    let bumped = state.lock().unwrap().bump_image(hash);
+    let changed = match bumped {
+        Some(changed) => changed,
+        None => {
+            let Some(prepared) = state::prepare_image(&img, hash, app) else {
+                return false;
+            };
+            if !state.lock().unwrap().insert_image(prepared) {
+                return false;
+            }
+            true
+        }
     };
-    let mut st = state.lock().unwrap();
-    if !st.insert_image(prepared) {
-        return false;
-    }
     // OCR (si está activado) en otro hilo y otro proceso: la captura ya quedó guardada.
-    let id = st
+    // También para una repetida que nunca se leyó (se copió con el OCR apagado).
+    let st = state.lock().unwrap();
+    let pending = st
         .history
         .iter()
-        .find(|e| e.image.as_ref().is_some_and(|i| i.hash == hash))
-        .map(|e| e.id);
+        .find(|e| {
+            e.image
+                .as_ref()
+                .is_some_and(|i| i.hash == hash && i.ocr.is_none())
+        })
+        .map(|e| e.id)
+        .filter(|_| st.settings.ocr);
+    drop(st);
     let helper = crate::ocr::helper_path();
-    if let (true, Some(id), Some(helper)) = (st.settings.ocr, id, helper) {
-        drop(st);
-        // Solo la versión reducida espera su turno; la imagen completa se suelta aquí.
+    if let (Some(id), Some(helper)) = (pending, helper) {
+        // ShareX avisa varias veces por captura: una sola lectura por imagen a la vez.
+        static READING: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+        if READING.lock().unwrap().contains(&id) {
+            return changed;
+        }
+        READING.lock().unwrap().push(id);
+        // Solo la versión para el OCR espera su turno; la imagen completa se suelta aquí.
         let data = crate::ocr::payload(&img);
         drop(img);
         thread::spawn(move || {
-            if let Some(text) = crate::ocr::recognize_payload(&helper, data) {
+            let text = crate::ocr::recognize_payload(&helper, data);
+            READING.lock().unwrap().retain(|&r| r != id);
+            if let Some(text) = text {
                 if let Some(shared) = SHARED.get() {
                     let mut st = shared.state.lock().unwrap();
                     let found = st.set_ocr(id, text);
@@ -702,7 +720,7 @@ fn capture_image(state: &Mutex<State>, dib: &[u8], app: Option<String>) -> bool 
             }
         });
     }
-    true
+    changed
 }
 
 unsafe fn read_clipboard(owner: HWND) -> Option<Captured> {

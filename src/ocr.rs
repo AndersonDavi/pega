@@ -23,9 +23,23 @@ pub fn helper_path() -> Option<PathBuf> {
     exe.exists().then_some(exe)
 }
 
+/// Cuántas veces se agranda una captura antes del OCR: las chicas (un recorte de una línea,
+/// un número) tienen letra demasiado pequeña para que Windows la vea. Medido: una línea de
+/// 25 px de alto no se lee; agrandada 2 o 3 veces, sí.
+fn upscale_factor(img: &Rgba) -> u32 {
+    match img.width.max(img.height) {
+        0..=600 => 3,
+        601..=1250 => 2,
+        _ => 1,
+    }
+}
+
 /// Lo que se manda por stdin: ancho, alto y píxeles BGRA.
 pub fn payload(img: &Rgba) -> Vec<u8> {
-    let small = image::fit(img, MAX_SIDE, MAX_SIDE);
+    let small = match upscale_factor(img) {
+        1 => image::fit(img, MAX_SIDE, MAX_SIDE),
+        k => image::upscale(img, k),
+    };
     let mut out = Vec::with_capacity(8 + small.pixels.len());
     out.extend_from_slice(&small.width.to_le_bytes());
     out.extend_from_slice(&small.height.to_le_bytes());
@@ -84,15 +98,34 @@ mod tests {
 
     #[test]
     fn payload_is_bgra_with_size_header() {
+        // 1x1 se agranda a 3x3 (captura chica): cabecera con 3 y 3, píxeles en BGRA.
         let img = Rgba {
-            width: 2,
+            width: 1,
             height: 1,
-            pixels: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            pixels: vec![1, 2, 3, 4],
         };
-        assert_eq!(
-            payload(&img),
-            [2, 0, 0, 0, 1, 0, 0, 0, 3, 2, 1, 4, 7, 6, 5, 8]
-        );
+        let p = payload(&img);
+        assert_eq!(&p[..8], [3, 0, 0, 0, 3, 0, 0, 0]);
+        assert_eq!(p.len(), 8 + 3 * 3 * 4);
+        assert!(p[8..].chunks(4).all(|px| px == [3, 2, 1, 4]));
+    }
+
+    #[test]
+    fn small_captures_are_enlarged_for_the_ocr() {
+        let header = |w: u32, h: u32| {
+            let p = payload(&Rgba {
+                width: w,
+                height: h,
+                pixels: vec![0; (w * h * 4) as usize],
+            });
+            (
+                u32::from_le_bytes(p[0..4].try_into().unwrap()),
+                u32::from_le_bytes(p[4..8].try_into().unwrap()),
+            )
+        };
+        assert_eq!(header(138, 25), (414, 75), "un recorte de una línea: x3");
+        assert_eq!(header(1000, 600), (2000, 1200), "mediana: x2");
+        assert_eq!(header(1920, 1080), (1920, 1080), "pantalla completa: igual");
     }
 
     #[test]

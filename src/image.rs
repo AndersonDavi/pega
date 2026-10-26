@@ -97,6 +97,38 @@ pub fn fit(img: &Rgba, max_w: u32, max_h: u32) -> Rgba {
     }
 }
 
+/// Agranda `k` veces con interpolación bilineal: el OCR de Windows no ve texto de menos
+/// de ~20 px de alto, y en una captura chica la letra suele medir 10-12 px.
+pub fn upscale(img: &Rgba, k: u32) -> Rgba {
+    let (sw, sh) = (img.width as usize, img.height as usize);
+    let k = k.max(1) as usize;
+    let (w, h) = (sw * k, sh * k);
+    let mut pixels = Vec::with_capacity(w * h * 4);
+    // Posición en la imagen original del centro del píxel nuevo, y vecinos para mezclar.
+    let source = |t: usize, len: usize| {
+        let f = ((t as f32 + 0.5) / k as f32 - 0.5).max(0.0);
+        let a = (f as usize).min(len - 1);
+        (a, (a + 1).min(len - 1), f - a as f32)
+    };
+    let px = |x: usize, y: usize, c: usize| img.pixels[(y * sw + x) * 4 + c] as f32;
+    for y in 0..h {
+        let (y0, y1, ty) = source(y, sh);
+        for x in 0..w {
+            let (x0, x1, tx) = source(x, sw);
+            for c in 0..4 {
+                let top = px(x0, y0, c) * (1.0 - tx) + px(x1, y0, c) * tx;
+                let bottom = px(x0, y1, c) * (1.0 - tx) + px(x1, y1, c) * tx;
+                pixels.push((top * (1.0 - ty) + bottom * ty).round() as u8);
+            }
+        }
+    }
+    Rgba {
+        width: w as u32,
+        height: h as u32,
+        pixels,
+    }
+}
+
 fn u16_at(b: &[u8], i: usize) -> Option<u16> {
     Some(u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?))
 }
