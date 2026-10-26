@@ -288,6 +288,12 @@ impl State {
         self.report(r);
     }
 
+    /// Con la ventana oculta: vacía la caché de SQLite.
+    pub fn release_memory(&mut self) {
+        let r = self.store.release_memory();
+        self.report(r);
+    }
+
     /// Guarda ajustes nuevos y aplica los límites. Devuelve si cambió el atajo.
     pub fn save_settings(&mut self, new: Settings) -> bool {
         let hotkey_changed =

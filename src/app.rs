@@ -1379,6 +1379,7 @@ impl egui_software_backend::App for PegaApp {
         // cuadro) y se devuelve la RAM física. Al volver se recrean las que se vean.
         if win::take_hiding() {
             self.thumbs.clear();
+            self.state.lock().unwrap().release_memory();
             win::trim_memory();
         }
     }

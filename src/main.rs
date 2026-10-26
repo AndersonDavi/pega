@@ -75,6 +75,10 @@ fn main() {
         );
     run_app_with_software_backend(config, move |ctx| {
         win::start(state.clone(), ctx.clone());
+        if hidden {
+            state.lock().unwrap().release_memory();
+            win::trim_memory_after(std::time::Duration::from_secs(3));
+        }
         app::PegaApp::new(state.clone())
     })
     .expect("no se pudo crear la ventana");

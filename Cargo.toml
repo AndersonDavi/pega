@@ -22,5 +22,26 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# Las dependencias se compilan pensando en tamaño; lo que dibuja cada cuadro (egui, sus
+# fuentes y el backend), el cifrado de la exportación y los PNG de las miniaturas, en velocidad.
+[profile.release.package."*"]
+opt-level = "s"
+
+[profile.release.package]
+egui = { opt-level = 3 }
+epaint = { opt-level = 3 }
+emath = { opt-level = 3 }
+ecolor = { opt-level = 3 }
+skrifa = { opt-level = 3 }
+read-fonts = { opt-level = 3 }
+font-types = { opt-level = 3 }
+egui_software_backend = { opt-level = 3 }
+softbuffer = { opt-level = 3 }
+png = { opt-level = 3 }
+argon2 = { opt-level = 3 }
+blake2 = { opt-level = 3 }
+chacha20 = { opt-level = 3 }
+chacha20poly1305 = { opt-level = 3 }
+
 [build-dependencies]
 embed-resource = "3.0.12"

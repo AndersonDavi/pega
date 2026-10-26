@@ -63,6 +63,7 @@ impl Store {
              PRAGMA synchronous = NORMAL;
              PRAGMA foreign_keys = ON;
              PRAGMA secure_delete = ON;
+             PRAGMA cache_size = -256;
              CREATE TABLE IF NOT EXISTS history (
                  id      INTEGER PRIMARY KEY,
                  data    BLOB    NOT NULL,
@@ -343,6 +344,11 @@ impl Store {
     /// las copias viejas de esas páginas no quedan en el WAL.
     pub fn checkpoint(&self) -> Result<()> {
         self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+    }
+
+    /// Suelta las páginas que SQLite tiene en caché (se vuelven a leer del disco si hacen falta).
+    pub fn release_memory(&self) -> Result<()> {
+        self.conn.release_memory()
     }
 
     /// Copia compacta y consistente de toda la base (los datos siguen cifrados).

@@ -23,7 +23,8 @@ use windows_sys::Win32::System::DataExchange::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{
-    GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
+    GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, HeapOptimizeResources,
+    HeapSetInformation,
 };
 use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
 use windows_sys::Win32::System::Threading::{
@@ -112,9 +113,33 @@ pub fn take_hiding() -> bool {
 /// Con la ventana ya oculta, devuelve a Windows las páginas de RAM física que no se usan.
 /// Al volver a mostrarla se recuperan las que hagan falta (unos milisegundos).
 pub fn trim_memory() {
-    thread::spawn(|| {
-        thread::sleep(Duration::from_millis(300));
-        unsafe { K32EmptyWorkingSet(GetCurrentProcess()) };
+    trim_memory_after(Duration::from_millis(300));
+}
+
+/// Igual, tras `delay` (al arrancar oculto, cuando ya cargó todo).
+pub fn trim_memory_after(delay: Duration) {
+    thread::spawn(move || {
+        thread::sleep(delay);
+        unsafe {
+            // Que el heap devuelva a Windows los bloques libres que guarda en caché
+            // (EmptyWorkingSet solo saca páginas de la RAM física, no libera memoria).
+            #[repr(C)]
+            struct OptimizeResources {
+                version: u32,
+                flags: u32,
+            }
+            let info = OptimizeResources {
+                version: 1,
+                flags: 0,
+            };
+            HeapSetInformation(
+                ptr::null_mut(),
+                HeapOptimizeResources,
+                (&info as *const OptimizeResources).cast(),
+                std::mem::size_of::<OptimizeResources>(),
+            );
+            K32EmptyWorkingSet(GetCurrentProcess());
+        }
     });
 }
 
