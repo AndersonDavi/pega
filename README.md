@@ -20,7 +20,12 @@ pero en un solo proceso sin navegador embebido.
 - **Atajo global** para abrir/ocultar (`Ctrl+Alt+V` por defecto, configurable).
 - **Bandeja del sistema** e **inicio con Windows** (arranca oculto).
 - **Importa** tableros y clips de PasteBar (los anidados quedan como `Padre / Hijo`).
-- **Ajustes**: atajo, tema claro/oscuro/sistema y límites del historial (o sin límite).
+- **Ajustes**: atajo, tema claro/oscuro/sistema, idioma (español/inglés) y límites del historial (o sin límite).
+- **De dónde vino** cada copia (la app) y cuándo; apps excluidas y borrado automático por antigüedad.
+- **Código**: detecta el lenguaje (JSON, SQL, Rust, Python, JS/TS, C#, HTML, CSS, Bash, PowerShell, Markdown, YAML)
+  y lo muestra resaltado al pasar el mouse.
+- **Tableros** con colores, y se reordenan arrastrando (los clips también, entre tableros).
+- **Respaldos** y restauración.
 - **Clic** copia; **doble clic** o **Enter** pega en la ventana anterior; `Shift+Enter` solo copia.
 - Las capturas repetidas (ShareX y similares avisan varias veces) no se duplican: se comparan por hash de píxeles.
 
@@ -33,6 +38,9 @@ pero en un solo proceso sin navegador embebido.
   `CanIncludeInClipboardHistory`): lo que copian los gestores de contraseñas no se guarda.
 - Al copiar un clip de tablero se marca igual, para que no quede en el historial de Windows (Win+V)
   ni se suba a la nube.
+- **Ocultar palabras** sensibles y números de tarjeta en la lista (al pegar sale el texto real).
+- **Bloqueo con PIN**, al iniciar y tras N minutos sin uso.
+- Los respaldos siguen cifrados: solo los puede restaurar el mismo usuario de Windows.
 - Los datos viven en `%APPDATA%\Pega\pega.db`.
 
 ## Compilar

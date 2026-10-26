@@ -5,12 +5,14 @@
 
 use crate::backup;
 use crate::code;
+use crate::i18n::t;
 use crate::image;
 use crate::lock::Lock;
 use crate::mask::mask;
 use crate::settings::{Settings, Theme};
 use crate::settings_ui::{Outcome, SettingsWindow};
 use crate::state::{self, State};
+use crate::tr;
 use crate::win;
 use egui::{Key, Modifiers, RichText, TextWrapMode, ViewportCommand};
 use egui_software_backend::SoftwareBackend;
@@ -103,7 +105,7 @@ pub struct PegaApp {
     quitting: bool,
     /// Miniaturas ya subidas a egui, por id de entrada.
     thumbs: HashMap<i64, egui::TextureHandle>,
-    /// Aviso corto ("Copiado") y hasta cuándo se muestra.
+    /// Aviso corto (t("Copiado", "Copied")) y hasta cuándo se muestra.
     flash: Option<(String, f64)>,
     settings_window: Option<SettingsWindow>,
     /// Tema aplicado a egui; se reaplica solo si cambia en los ajustes.
@@ -185,7 +187,7 @@ fn preview(text: &str) -> String {
     let mut out: String = first.chars().take(120).collect();
     let lines = trimmed.lines().count();
     if lines > 1 {
-        out.push_str(&format!("  (+{} líneas)", lines - 1));
+        out.push_str(&tr!("  (+{} líneas)", "  (+{} lines)", lines - 1));
     } else if first.chars().count() > 120 {
         out.push('…');
     }
@@ -195,7 +197,7 @@ fn preview(text: &str) -> String {
 /// "Desde chrome.exe · hace 5 min".
 fn origin(app: Option<&str>, used_at: i64) -> String {
     match app {
-        Some(app) => format!("Desde {app} · {}", ago(used_at)),
+        Some(app) => tr!("Desde {app} · {}", "From {app} · {}", ago(used_at)),
         None => ago(used_at),
     }
 }
@@ -217,10 +219,10 @@ fn tooltip(text: &str, app: Option<&str>, used_at: i64) -> String {
 fn ago(ms: i64) -> String {
     let s = ((state::now() - ms) / 1000).max(0);
     match s {
-        0..60 => "hace un momento".into(),
-        60..3600 => format!("hace {} min", s / 60),
-        3600..86400 => format!("hace {} h", s / 3600),
-        _ => format!("hace {} días", s / 86400),
+        0..60 => t("hace un momento", "just now").into(),
+        60..3600 => tr!("hace {} min", "{} min ago", s / 60),
+        3600..86400 => tr!("hace {} h", "{} h ago", s / 3600),
+        _ => tr!("hace {} días", "{} days ago", s / 86400),
     }
 }
 
@@ -246,7 +248,7 @@ impl egui_software_backend::App for PegaApp {
             self.flash(&notice, 8.0, &ctx);
         }
 
-        // Cerrar la ventana la oculta (sigue escuchando); "Salir" la cierra de verdad.
+        // Cerrar la ventana la oculta (sigue escuchando); t("Salir", "Quit") la cierra de verdad.
         // Sin atajo global no habría forma de volver a abrirla, así que ahí sí se cierra.
         if ctx.input(|i| i.viewport().close_requested())
             && !self.quitting
@@ -351,28 +353,42 @@ impl egui_software_backend::App for PegaApp {
             ui.horizontal(|ui| {
                 ui.menu_button("…", |ui| {
                     let mut autostart = crate::autostart::is_enabled();
-                    if ui.checkbox(&mut autostart, "Iniciar con Windows").changed() {
+                    if ui
+                        .checkbox(
+                            &mut autostart,
+                            t("Iniciar con Windows", "Start with Windows"),
+                        )
+                        .changed()
+                    {
                         crate::autostart::set(autostart);
                     }
-                    if ui.button("Importar de PasteBar").clicked() {
+                    if ui
+                        .button(t("Importar de PasteBar", "Import from PasteBar"))
+                        .clicked()
+                    {
                         actions.push(Action::ImportPasteBar);
                     }
-                    if !st.settings.pin.is_empty() && ui.button("Bloquear ahora").clicked() {
+                    if !st.settings.pin.is_empty()
+                        && ui.button(t("Bloquear ahora", "Lock now")).clicked()
+                    {
                         actions.push(Action::Lock);
                     }
-                    if ui.button("Crear respaldo…").clicked() {
+                    if ui.button(t("Crear respaldo…", "Create backup…")).clicked() {
                         actions.push(Action::Backup);
                     }
-                    if ui.button("Restaurar respaldo…").clicked() {
+                    if ui
+                        .button(t("Restaurar respaldo…", "Restore backup…"))
+                        .clicked()
+                    {
                         actions.push(Action::PickRestore);
                     }
-                    if ui.button("Ajustes…").clicked() {
+                    if ui.button(t("Ajustes…", "Settings…")).clicked() {
                         self.settings_window = Some(SettingsWindow::new(&st.settings));
                     }
                     ui.separator();
                     if ui
-                        .button("Salir")
-                        .on_hover_text("Cierra Pega por completo")
+                        .button(t("Salir", "Quit"))
+                        .on_hover_text(t("Cierra Pega por completo", "Closes Pega completely"))
                         .clicked()
                     {
                         actions.push(Action::Quit);
@@ -385,7 +401,10 @@ impl egui_software_backend::App for PegaApp {
                     }
                     _ => self.flash = None,
                 }
-                let hint = format!("Buscar en historial y tableros…   ({hotkey} abre/oculta)");
+                let hint = tr!(
+                    "Buscar en historial y tableros…   ({hotkey} abre/oculta)",
+                    "Search history and boards…   ({hotkey} shows/hides)"
+                );
                 let search = ui.add(
                     egui::TextEdit::singleline(&mut self.query)
                         .hint_text(hint)
@@ -402,7 +421,10 @@ impl egui_software_backend::App for PegaApp {
             if !st.hotkey_ok {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    format!("No se pudo registrar {hotkey}: otra app lo usa. Cámbialo en Ajustes."),
+                    tr!(
+                        "No se pudo registrar {hotkey}: otra app lo usa. Cámbialo en Ajustes.",
+                        "Couldn't register {hotkey}: another app uses it. Change it in Settings."
+                    ),
                 );
             }
             if let Some(err) = &st.error {
@@ -417,15 +439,16 @@ impl egui_software_backend::App for PegaApp {
             .show_inside(ui, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.strong(format!("Historial ({})", st.history.len()));
+                    ui.strong(tr!("Historial ({})", "History ({})", st.history.len()));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.confirm_clear {
-                            if ui.button("Cancelar").clicked() {
+                            if ui.button(t("Cancelar", "Cancel")).clicked() {
                                 self.confirm_clear = false;
                             }
                             if ui
                                 .button(
-                                    RichText::new("Sí, borrar").color(ui.visuals().error_fg_color),
+                                    RichText::new(t("Sí, borrar", "Yes, delete"))
+                                        .color(ui.visuals().error_fg_color),
                                 )
                                 .clicked()
                             {
@@ -433,8 +456,11 @@ impl egui_software_backend::App for PegaApp {
                                 self.confirm_clear = false;
                             }
                         } else if ui
-                            .small_button("Limpiar")
-                            .on_hover_text("Borra todo menos lo fijado")
+                            .small_button(t("Limpiar", "Clear"))
+                            .on_hover_text(t(
+                                "Borra todo menos lo fijado",
+                                "Deletes everything except pinned",
+                            ))
                             .clicked()
                         {
                             self.confirm_clear = true;
@@ -466,8 +492,12 @@ impl egui_software_backend::App for PegaApp {
                                 let right = egui::RichText::new(tags.join(" · ")).small().weak();
                                 let resp = match &e.image {
                                     Some(img) => {
-                                        let label =
-                                            format!("{pin}Imagen {}×{}", img.width, img.height);
+                                        let label = tr!(
+                                            "{pin}Imagen {}×{}",
+                                            "{pin}Image {}×{}",
+                                            img.width,
+                                            img.height
+                                        );
                                         match self.thumb(&ctx, e) {
                                             Some(tex) => ui.add(
                                                 egui::Button::selectable(
@@ -527,7 +557,7 @@ impl egui_software_backend::App for PegaApp {
                                     });
                                 }
                                 resp.context_menu(|ui| {
-                                    if ui.button("Pegar").clicked() {
+                                    if ui.button(t("Pegar", "Paste")).clicked() {
                                         actions.push(Action::Copy {
                                             item: item_of(e),
                                             private: false,
@@ -535,33 +565,43 @@ impl egui_software_backend::App for PegaApp {
                                         });
                                     }
                                     if ui
-                                        .button(if e.pinned { "Desfijar" } else { "Fijar" })
+                                        .button(if e.pinned {
+                                            t("Desfijar", "Unpin")
+                                        } else {
+                                            t("Fijar", "Pin")
+                                        })
                                         .clicked()
                                     {
                                         actions.push(Action::TogglePin(e.id));
                                     }
                                     if e.image.is_none() && !st.boards.is_empty() {
-                                        ui.menu_button("Guardar en tablero", |ui| {
-                                            for b in &st.boards {
-                                                if ui.button(&b.name).clicked() {
-                                                    actions.push(Action::SaveToBoard {
-                                                        board_id: b.id,
-                                                        text: e.text.clone(),
-                                                    });
+                                        ui.menu_button(
+                                            t("Guardar en tablero", "Save to board"),
+                                            |ui| {
+                                                for b in &st.boards {
+                                                    if ui.button(&b.name).clicked() {
+                                                        actions.push(Action::SaveToBoard {
+                                                            board_id: b.id,
+                                                            text: e.text.clone(),
+                                                        });
+                                                    }
                                                 }
-                                            }
-                                        });
+                                            },
+                                        );
                                     }
                                     ui.separator();
                                     if let Some(app) = app {
                                         if ui
-                                            .button(format!("No guardar copias de {app}"))
+                                            .button(tr!(
+                                                "No guardar copias de {app}",
+                                                "Don't save copies from {app}"
+                                            ))
                                             .clicked()
                                         {
                                             actions.push(Action::ExcludeApp(app.to_owned()));
                                         }
                                     }
-                                    if ui.button("Borrar").clicked() {
+                                    if ui.button(t("Borrar", "Delete")).clicked() {
                                         actions.push(Action::DeleteEntry(e.id));
                                     }
                                 });
@@ -569,9 +609,12 @@ impl egui_software_backend::App for PegaApp {
                         });
                         if hist.is_empty() {
                             ui.weak(if terms.is_empty() {
-                                "Copia algo y aparecerá aquí."
+                                t(
+                                    "Copia algo y aparecerá aquí.",
+                                    "Copy something and it will show up here.",
+                                )
                             } else {
-                                "Sin resultados."
+                                t("Sin resultados.", "No results.")
                             });
                         }
                     });
@@ -579,25 +622,25 @@ impl egui_software_backend::App for PegaApp {
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("Tableros");
+                ui.strong(t("Tableros", "Boards"));
                 match &mut self.new_board {
                     Some(name) => {
                         let r = ui.add(
                             egui::TextEdit::singleline(name)
-                                .hint_text("Nombre del tablero")
+                                .hint_text(t("Nombre del tablero", "Board name"))
                                 .desired_width(180.0),
                         );
                         r.request_focus();
                         let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                        if (ui.button("Crear").clicked() || enter) && !name.trim().is_empty() {
+                        if (ui.button(t("Crear", "Create")).clicked() || enter) && !name.trim().is_empty() {
                             actions.push(Action::AddBoard(name.trim().to_owned()));
                             self.new_board = None;
-                        } else if ui.button("Cancelar").clicked() {
+                        } else if ui.button(t("Cancelar", "Cancel")).clicked() {
                             self.new_board = None;
                         }
                     }
                     None => {
-                        if ui.button("+ Tablero").clicked() {
+                        if ui.button(t("+ Tablero", "+ Board")).clicked() {
                             self.new_board = Some(String::new());
                         }
                     }
@@ -606,7 +649,7 @@ impl egui_software_backend::App for PegaApp {
             ui.separator();
             egui::ScrollArea::vertical().id_salt("boards").auto_shrink(false).show(ui, |ui| {
                 if st.boards.is_empty() {
-                    ui.weak("Crea un tablero para guardar textos fijos (datos, plantillas, respuestas…).");
+                    ui.weak(t("Crea un tablero para guardar textos fijos (datos, plantillas, respuestas…).", "Create a board to keep fixed texts (details, templates, replies…)."));
                 }
                 let dragging_clip = egui::DragAndDrop::has_payload_of_type::<DragClip>(&ctx);
                 let dragging_board = egui::DragAndDrop::has_payload_of_type::<DragBoard>(&ctx);
@@ -651,12 +694,12 @@ impl egui_software_backend::App for PegaApp {
                                 let handle = ui
                                     .add(egui::Label::new(title).sense(egui::Sense::drag()))
                                     .on_hover_cursor(egui::CursorIcon::Grab)
-                                    .on_hover_text("Arrastra para reordenar");
+                                    .on_hover_text(t("Arrastra para reordenar", "Drag to reorder"));
                                 handle.dnd_set_drag_payload(DragBoard(b.id));
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.menu_button("…", |ui| {
-                                    if ui.button("Renombrar").clicked() {
+                                    if ui.button(t("Renombrar", "Rename")).clicked() {
                                         self.renaming = Some((b.id, b.name.clone()));
                                     }
                                     ui.label("Color");
@@ -678,11 +721,11 @@ impl egui_software_backend::App for PegaApp {
                                             }
                                         }
                                     });
-                                    if b.color.is_some() && ui.button("Sin color").clicked() {
+                                    if b.color.is_some() && ui.button(t("Sin color", "No color")).clicked() {
                                         actions.push(Action::SetBoardColor(b.id, None));
                                     }
                                     ui.separator();
-                                    if ui.button("Borrar tablero").clicked() {
+                                    if ui.button(t("Borrar tablero", "Delete board")).clicked() {
                                         actions.push(Action::DeleteBoard(b.id));
                                     }
                                 });
@@ -705,7 +748,7 @@ impl egui_software_backend::App for PegaApp {
                                 let resp = ui
                                     .add(chip)
                                     .interact(egui::Sense::drag())
-                                    .on_hover_text("Clic: copiar · Doble clic: pegar · Arrastra para mover");
+                                    .on_hover_text(t("Clic: copiar · Doble clic: pegar · Arrastra para mover", "Click: copy · Double-click: paste · Drag to move"));
                                 resp.dnd_set_drag_payload(DragClip(c.id));
                                 // Soltar un clip sobre otro lo pone antes de ese.
                                 if dragging_clip && resp.dnd_hover_payload::<DragClip>().is_some() {
@@ -733,7 +776,7 @@ impl egui_software_backend::App for PegaApp {
                                     });
                                 }
                                 resp.context_menu(|ui| {
-                                    if ui.button("Editar").clicked() {
+                                    if ui.button(t("Editar", "Edit")).clicked() {
                                         self.editor = Some(Editor {
                                             id: Some(c.id),
                                             board_id: c.board_id,
@@ -741,13 +784,13 @@ impl egui_software_backend::App for PegaApp {
                                             text: c.text.clone(),
                                         });
                                     }
-                                    if ui.button("Borrar").clicked() {
+                                    if ui.button(t("Borrar", "Delete")).clicked() {
                                         actions.push(Action::DeleteClip(c.id));
                                     }
                                 });
                             }
                             if clips.is_empty() {
-                                ui.weak(if dragging_clip { "Suelta aquí" } else { "Sin clips" });
+                                ui.weak(if dragging_clip { t("Suelta aquí", "Drop here") } else { t("Sin clips", "No clips") });
                             }
                         });
                     });
@@ -780,18 +823,21 @@ impl egui_software_backend::App for PegaApp {
             let mut open = true;
             let mut done = false;
             egui::Window::new(if ed.id.is_some() {
-                "Editar clip"
+                t("Editar clip", "Edit clip")
             } else {
-                "Nuevo clip"
+                t("Nuevo clip", "New clip")
             })
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(&ctx, |ui| {
-                ui.label("Nombre");
+                ui.label(t("Nombre", "Name"));
                 ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(360.0));
-                ui.label("Contenido (se guarda cifrado)");
+                ui.label(t(
+                    "Contenido (se guarda cifrado)",
+                    "Content (stored encrypted)",
+                ));
                 ui.add(
                     egui::TextEdit::multiline(&mut ed.text)
                         .desired_width(360.0)
@@ -800,7 +846,7 @@ impl egui_software_backend::App for PegaApp {
                 ui.horizontal(|ui| {
                     let valid = !ed.name.trim().is_empty() && !ed.text.is_empty();
                     if ui
-                        .add_enabled(valid, egui::Button::new("Guardar"))
+                        .add_enabled(valid, egui::Button::new(t("Guardar", "Save")))
                         .clicked()
                     {
                         actions.push(Action::SaveClip {
@@ -811,7 +857,7 @@ impl egui_software_backend::App for PegaApp {
                         });
                         done = true;
                     }
-                    if ui.button("Cancelar").clicked() {
+                    if ui.button(t("Cancelar", "Cancel")).clicked() {
                         done = true;
                     }
                 });
@@ -823,22 +869,26 @@ impl egui_software_backend::App for PegaApp {
 
         if let Some(path) = &self.confirm_restore {
             let mut close = false;
-            egui::Window::new("Restaurar respaldo")
+            egui::Window::new(t("Restaurar respaldo", "Restore backup"))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(&ctx, |ui| {
-                    ui.label(format!(
+                    ui.label(tr!(
                         "Se reemplazarán el historial, los tableros y los ajustes por los de:\n{}",
+                        "History, boards and settings will be replaced by those in:\n{}",
                         path.display()
                     ));
-                    ui.weak("La base actual se guarda aparte, por si acaso. Pega se reiniciará.");
+                    ui.weak(t(
+                        "La base actual se guarda aparte, por si acaso. Pega se reiniciará.",
+                        "Your current database is kept aside, just in case. Pega will restart.",
+                    ));
                     ui.horizontal(|ui| {
-                        if ui.button("Restaurar").clicked() {
+                        if ui.button(t("Restaurar", "Restore")).clicked() {
                             actions.push(Action::Restore(path.clone()));
                             close = true;
                         }
-                        if ui.button("Cancelar").clicked() {
+                        if ui.button(t("Cancelar", "Cancel")).clicked() {
                             close = true;
                         }
                     });
@@ -883,25 +933,28 @@ impl PegaApp {
                         }
                     };
                     if !ok {
-                        self.flash("No se pudo copiar", 1.5, ctx);
+                        self.flash(t("No se pudo copiar", "Couldn't copy"), 1.5, ctx);
                     } else if paste {
                         win::paste_into_previous(ctx);
                     } else {
-                        self.flash("Copiado", 1.5, ctx);
+                        self.flash(t("Copiado", "Copied"), 1.5, ctx);
                     }
                 }
                 Action::ImportPasteBar => {
                     let result = crate::import::import_pastebar(&mut self.state.lock().unwrap());
                     let msg = match result {
-                        Ok(s) if s.boards + s.clips == 0 => {
-                            "PasteBar: nada nuevo que importar".to_owned()
-                        }
-                        Ok(s) => format!(
+                        Ok(s) if s.boards + s.clips == 0 => t(
+                            "PasteBar: nada nuevo que importar",
+                            "PasteBar: nothing new to import",
+                        )
+                        .to_owned(),
+                        Ok(s) => tr!(
                             "Importados {} tableros y {} clips{}",
+                            "Imported {} boards and {} clips{}",
                             s.boards,
                             s.clips,
                             if s.skipped > 0 {
-                                format!(" ({} omitidos)", s.skipped)
+                                tr!(" ({} omitidos)", " ({} skipped)", s.skipped)
                             } else {
                                 String::new()
                             }
@@ -921,13 +974,22 @@ impl PegaApp {
                     let result = self.state.lock().unwrap().backup_to(&path);
                     match result {
                         Ok(()) => self.flash(
-                            &format!("Respaldo guardado en {}", path.display()),
+                            &tr!(
+                                "Respaldo guardado en {}",
+                                "Backup saved to {}",
+                                path.display()
+                            ),
                             5.0,
                             ctx,
                         ),
-                        Err(e) => {
-                            self.flash(&format!("No se pudo crear el respaldo: {e}"), 6.0, ctx)
-                        }
+                        Err(e) => self.flash(
+                            &tr!(
+                                "No se pudo crear el respaldo: {e}",
+                                "Couldn't create the backup: {e}"
+                            ),
+                            6.0,
+                            ctx,
+                        ),
                     }
                 }
                 Action::PickRestore => {

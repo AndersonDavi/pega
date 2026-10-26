@@ -3,6 +3,7 @@
 
 use crate::code::{self, Lang};
 use crate::crypto;
+use crate::i18n::t;
 use crate::image::{self, Rgba};
 use crate::settings::Settings;
 use crate::store::{KIND_IMAGE, Name, Store};
@@ -71,7 +72,7 @@ pub fn prepare_image(img: &Rgba, hash: i64, app: Option<String>) -> Option<Prepa
 }
 
 fn image_key(w: u32, h: u32) -> String {
-    format!("imagen {w}x{h}")
+    format!("imagen image {w}x{h}")
 }
 
 pub struct Board {
@@ -222,6 +223,7 @@ impl State {
             .and_then(|b| crypto::unprotect_str(&b))
             .map(|t| Settings::decode(&t))
             .unwrap_or_default();
+        crate::i18n::apply(settings.language);
         let state = Self {
             store,
             history,
@@ -274,8 +276,17 @@ impl State {
                 let r = self.store.set_meta(SETTINGS_KEY, &enc);
                 self.report(r);
             }
-            None => self.error = Some("DPAPI no pudo cifrar los ajustes".into()),
+            None => {
+                self.error = Some(
+                    t(
+                        "DPAPI no pudo cifrar los ajustes",
+                        "DPAPI couldn't encrypt the settings",
+                    )
+                    .into(),
+                )
+            }
         }
+        crate::i18n::apply(new.language);
         self.settings = new;
         self.trim();
         self.purge_old();
@@ -300,7 +311,13 @@ impl State {
         }
         let used_at = now();
         let Some(data) = crypto::protect_str(&text) else {
-            self.error = Some("DPAPI no pudo cifrar la copia".into());
+            self.error = Some(
+                t(
+                    "DPAPI no pudo cifrar la copia",
+                    "DPAPI couldn't encrypt the copy",
+                )
+                .into(),
+            );
             return false;
         };
         let app = self.app_id(app);
@@ -610,7 +627,13 @@ impl State {
     pub fn save_clip(&mut self, id: Option<i64>, board_id: i64, name: &str, text: &str) {
         let (Some(data), Some(enc_name)) = (crypto::protect_str(text), crypto::protect_str(name))
         else {
-            self.error = Some("DPAPI no pudo cifrar el clip".into());
+            self.error = Some(
+                t(
+                    "DPAPI no pudo cifrar el clip",
+                    "DPAPI couldn't encrypt the clip",
+                )
+                .into(),
+            );
             return;
         };
         let key = fold(&format!("{name} {text}"));

@@ -1,6 +1,7 @@
-//! Ventana de ajustes. Edita una copia; nada se aplica hasta "Guardar".
+//! Ventana de ajustes. Edita una copia; nada se aplica hasta t("Guardar", "Save").
 
-use crate::settings::{self, Hotkey, Settings, Theme};
+use crate::i18n::t;
+use crate::settings::{self, Hotkey, Settings, Theme, UiLang};
 
 pub struct SettingsWindow {
     draft: Settings,
@@ -41,7 +42,7 @@ impl SettingsWindow {
         if self.capturing {
             self.capture_hotkey(ctx);
         }
-        egui::Window::new("Ajustes")
+        egui::Window::new(t("Ajustes", "Settings"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -51,16 +52,16 @@ impl SettingsWindow {
                     .num_columns(2)
                     .spacing([16.0, 10.0])
                     .show(ui, |ui| {
-                        ui.label("Atajo para abrir");
+                        ui.label(t("Atajo para abrir", "Shortcut to open"));
                         ui.horizontal(|ui| {
                             if self.capturing {
                                 ui.label(
-                                    egui::RichText::new("Presiona la combinación… (Esc cancela)")
+                                    egui::RichText::new(t("Presiona la combinación… (Esc cancela)", "Press the combination… (Esc cancels)"))
                                         .italics(),
                                 );
                             } else {
                                 ui.monospace(self.draft.hotkey.label());
-                                if ui.button("Cambiar").clicked() {
+                                if ui.button(t("Cambiar", "Change")).clicked() {
                                     self.capturing = true;
                                     self.warning = None;
                                 }
@@ -68,40 +69,48 @@ impl SettingsWindow {
                         });
                         ui.end_row();
 
-                        ui.label("Tema");
+                        ui.label(t("Idioma", "Language"));
                         ui.horizontal(|ui| {
-                            ui.radio_value(&mut self.draft.theme, Theme::System, "Sistema");
-                            ui.radio_value(&mut self.draft.theme, Theme::Dark, "Oscuro");
-                            ui.radio_value(&mut self.draft.theme, Theme::Light, "Claro");
+                            ui.radio_value(&mut self.draft.language, UiLang::System, t("Sistema", "System"));
+                            ui.radio_value(&mut self.draft.language, UiLang::Spanish, "Español");
+                            ui.radio_value(&mut self.draft.language, UiLang::English, "English");
                         });
                         ui.end_row();
 
-                        ui.label("Textos en el historial");
+                        ui.label(t("Tema", "Theme"));
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut self.draft.theme, Theme::System, t("Sistema", "System"));
+                            ui.radio_value(&mut self.draft.theme, Theme::Dark, t("Oscuro", "Dark"));
+                            ui.radio_value(&mut self.draft.theme, Theme::Light, t("Claro", "Light"));
+                        });
+                        ui.end_row();
+
+                        ui.label(t("Textos en el historial", "Texts in history"));
                         limit_editor(ui, &mut self.draft.max_texts, 1000);
                         ui.end_row();
 
-                        ui.label("Imágenes en el historial");
+                        ui.label(t("Imágenes en el historial", "Images in history"));
                         limit_editor(ui, &mut self.draft.max_images, 100);
                         ui.end_row();
 
-                        ui.label("Borrar copias con más de");
+                        ui.label(t("Borrar copias con más de", "Delete copies older than"));
                         ui.horizontal(|ui| {
                             let mut forever = self.draft.keep_days == 0;
                             if !forever {
                                 ui.add(
                                     egui::DragValue::new(&mut self.draft.keep_days)
                                         .range(1..=3650)
-                                        .suffix(" días"),
+                                        .suffix(t(" días", " days")),
                                 );
                             }
-                            if ui.checkbox(&mut forever, "Nunca").changed() {
+                            if ui.checkbox(&mut forever, t("Nunca", "Never")).changed() {
                                 self.draft.keep_days = if forever { 0 } else { 30 };
                             }
                         });
                         ui.end_row();
 
-                        ui.label("No guardar copias de")
-                            .on_hover_text("Un ejecutable por línea, por ejemplo keepass.exe");
+                        ui.label(t("No guardar copias de", "Don't save copies from"))
+                            .on_hover_text(t("Un ejecutable por línea, por ejemplo keepass.exe", "One executable per line, e.g. keepass.exe"));
                         ui.add(
                             egui::TextEdit::multiline(&mut self.apps_text)
                                 .hint_text("keepass.exe")
@@ -110,12 +119,12 @@ impl SettingsWindow {
                         );
                         ui.end_row();
                     });
-                ui.weak("Lo fijado nunca se borra por los límites ni por antigüedad.");
+                ui.weak(t("Lo fijado nunca se borra por los límites ni por antigüedad.", "Pinned items are never deleted by limits or age."));
                 ui.separator();
-                ui.strong("Privacidad");
+                ui.strong(t("Privacidad", "Privacy"));
                 egui::Grid::new("privacidad").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
-                    ui.label("Ocultar estas palabras")
-                        .on_hover_text("Una por línea. Se ven como ••• en la lista; al pegar sale el texto real.");
+                    ui.label(t("Ocultar estas palabras", "Hide these words"))
+                        .on_hover_text(t("Una por línea. Se ven como ••• en la lista; al pegar sale el texto real.", "One per line. Shown as ••• in the list; pasting gives the real text."));
                     ui.add(
                         egui::TextEdit::multiline(&mut self.words_text)
                             .desired_rows(2)
@@ -124,28 +133,30 @@ impl SettingsWindow {
                     ui.end_row();
 
                     ui.label("");
-                    ui.checkbox(&mut self.draft.mask_cards, "Ocultar números de tarjeta");
+                    ui.checkbox(&mut self.draft.mask_cards, t("Ocultar números de tarjeta", "Hide card numbers"));
                     ui.end_row();
 
-                    ui.label("PIN de bloqueo").on_hover_text(
-                        "Bloquea la ventana. Los datos ya están cifrados en disco; esto evita que \
-                         alguien frente a tu PC los vea.",
+                    ui.label(t("PIN de bloqueo", "Lock PIN")).on_hover_text(
+                        t(
+                            "Bloquea la ventana. Los datos ya están cifrados en disco; esto evita que alguien frente a tu PC los vea.",
+                            "Locks the window. Data is already encrypted on disk; this keeps someone at your PC from seeing it.",
+                        ),
                     );
                     self.pin_editor(ui);
                     ui.end_row();
 
                     if !self.draft.pin.is_empty() {
-                        ui.label("Bloquear tras");
+                        ui.label(t("Bloquear tras", "Lock after"));
                         ui.horizontal(|ui| {
                             let mut only_start = self.draft.lock_minutes == 0;
                             if !only_start {
                                 ui.add(
                                     egui::DragValue::new(&mut self.draft.lock_minutes)
                                         .range(1..=240)
-                                        .suffix(" min sin uso"),
+                                        .suffix(t(" min sin uso", " min idle")),
                                 );
                             }
-                            if ui.checkbox(&mut only_start, "Solo al iniciar").changed() {
+                            if ui.checkbox(&mut only_start, t("Solo al iniciar", "Only at startup")).changed() {
                                 self.draft.lock_minutes = if only_start { 0 } else { 5 };
                             }
                         });
@@ -157,7 +168,7 @@ impl SettingsWindow {
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Guardar").clicked() {
+                    if ui.button(t("Guardar", "Save")).clicked() {
                         let mut s = self.draft.clone();
                         s.excluded_apps = self
                             .apps_text
@@ -173,12 +184,12 @@ impl SettingsWindow {
                             .map(str::to_owned)
                             .collect();
                         if self.changing_pin {
-                            self.warning = Some("Termina o cancela el cambio de PIN.".into());
+                            self.warning = Some(t("Termina o cancela el cambio de PIN.", "Finish or cancel the PIN change.").into());
                         } else {
                             outcome = Outcome::Save(s);
                         }
                     }
-                    if ui.button("Cancelar").clicked() {
+                    if ui.button(t("Cancelar", "Cancel")).clicked() {
                         outcome = Outcome::Cancel;
                     }
                 });
@@ -194,32 +205,45 @@ impl SettingsWindow {
             if !self.changing_pin {
                 ui.horizontal(|ui| {
                     if self.draft.pin.is_empty() {
-                        ui.label("Sin PIN");
-                        if ui.button("Activar").clicked() {
+                        ui.label(t("Sin PIN", "No PIN"));
+                        if ui.button(t("Activar", "Enable")).clicked() {
                             self.changing_pin = true;
                         }
                     } else {
-                        ui.label("Activo");
-                        if ui.button("Cambiar").clicked() {
+                        ui.label(t("Activo", "On"));
+                        if ui.button(t("Cambiar", "Change")).clicked() {
                             self.changing_pin = true;
                         }
-                        if ui.button("Quitar").clicked() {
+                        if ui.button(t("Quitar", "Remove")).clicked() {
                             self.draft.pin.clear();
                         }
                     }
                 });
                 return;
             }
-            ui.add(pin_field(&mut self.pin_new, "Nuevo PIN (4 a 12 dígitos)"));
-            ui.add(pin_field(&mut self.pin_confirm, "Repetir PIN"));
+            ui.add(pin_field(
+                &mut self.pin_new,
+                t("Nuevo PIN (4 a 12 dígitos)", "New PIN (4 to 12 digits)"),
+            ));
+            ui.add(pin_field(
+                &mut self.pin_confirm,
+                t("Repetir PIN", "Repeat PIN"),
+            ));
             ui.horizontal(|ui| {
-                if ui.button("Aceptar").clicked() {
+                if ui.button(t("Aceptar", "OK")).clicked() {
                     let valid = (4..=12).contains(&self.pin_new.len())
                         && self.pin_new.chars().all(|c| c.is_ascii_digit());
                     if !valid {
-                        self.warning = Some("El PIN debe tener de 4 a 12 dígitos.".into());
+                        self.warning = Some(
+                            t(
+                                "El PIN debe tener de 4 a 12 dígitos.",
+                                "The PIN must have 4 to 12 digits.",
+                            )
+                            .into(),
+                        );
                     } else if self.pin_new != self.pin_confirm {
-                        self.warning = Some("Los PIN no coinciden.".into());
+                        self.warning =
+                            Some(t("Los PIN no coinciden.", "The PINs don't match.").into());
                     } else {
                         self.draft.pin = std::mem::take(&mut self.pin_new);
                         self.pin_confirm.clear();
@@ -227,7 +251,7 @@ impl SettingsWindow {
                         self.warning = None;
                     }
                 }
-                if ui.button("Cancelar").clicked() {
+                if ui.button(t("Cancelar", "Cancel")).clicked() {
                     self.pin_new.clear();
                     self.pin_confirm.clear();
                     self.changing_pin = false;
@@ -258,7 +282,13 @@ impl SettingsWindow {
             return;
         }
         let Some(vk) = settings::vk_from_egui(key) else {
-            self.warning = Some("Esa tecla no se puede usar en un atajo.".into());
+            self.warning = Some(
+                t(
+                    "Esa tecla no se puede usar en un atajo.",
+                    "That key can't be used in a shortcut.",
+                )
+                .into(),
+            );
             return;
         };
         let hk = Hotkey {
@@ -274,8 +304,11 @@ impl SettingsWindow {
             self.warning = None;
         } else {
             self.warning = Some(
-                "Usa Ctrl o Alt en la combinación, para no robarle la tecla a otros programas."
-                    .into(),
+                t(
+                    "Usa Ctrl o Alt en la combinación, para no robarle la tecla a otros programas.",
+                    "Use Ctrl or Alt in the combination, so other programs keep the key.",
+                )
+                .into(),
             );
         }
     }
@@ -288,7 +321,10 @@ fn limit_editor(ui: &mut egui::Ui, value: &mut usize, default: usize) {
         if !unlimited {
             ui.add(egui::DragValue::new(value).range(1..=1_000_000).speed(10));
         }
-        if ui.checkbox(&mut unlimited, "Sin límite").changed() {
+        if ui
+            .checkbox(&mut unlimited, t("Sin límite", "Unlimited"))
+            .changed()
+        {
             *value = if unlimited { 0 } else { default };
         }
     });

@@ -2,8 +2,10 @@
 //! el atajo global, leer/escribir texto y simular Ctrl+V en la ventana anterior.
 
 use crate::autostart;
+use crate::i18n::t;
 use crate::image::{self, Rgba};
 use crate::state::{self, MAX_TEXT_BYTES, State};
+use crate::tr;
 use egui::ViewportCommand;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed};
@@ -332,16 +334,21 @@ unsafe fn tray_menu(hwnd: HWND, ctx: &egui::Context) {
         } else {
             0
         };
-        let open = wide(&format!("Abrir Pega\t{}", hotkey_label()));
+        let open = wide(&tr!("Abrir Pega\t{}", "Open Pega\t{}", hotkey_label()));
         AppendMenuW(menu, MF_STRING, MENU_OPEN, open.as_ptr());
         AppendMenuW(
             menu,
             MF_STRING | autostart_flag,
             MENU_AUTOSTART,
-            wide("Iniciar con Windows").as_ptr(),
+            wide(t("Iniciar con Windows", "Start with Windows")).as_ptr(),
         );
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
-        AppendMenuW(menu, MF_STRING, MENU_QUIT, wide("Salir").as_ptr());
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_QUIT,
+            wide(t("Salir", "Quit")).as_ptr(),
+        );
         let mut pt = mem::zeroed();
         GetCursorPos(&mut pt);
         // Sin esto el menú no se cierra al hacer clic fuera (comportamiento documentado de Windows).

@@ -6,6 +6,7 @@ mod autostart;
 mod backup;
 mod code;
 mod crypto;
+mod i18n;
 mod image;
 mod import;
 mod lock;
@@ -56,17 +57,22 @@ fn main() {
     autostart::refresh();
     let dir = data_dir();
     std::fs::create_dir_all(&dir).expect("no se pudo crear %APPDATA%\\Pega");
-    let notice = restore.map(|b| match backup::apply_restore(&dir, &b) {
-        Ok(kept) => format!(
-            "Respaldo restaurado. La base anterior quedó en {}",
-            kept.display()
-        ),
-        Err(e) => format!("No se restauró el respaldo: {e}"),
-    });
+    let restored = restore.map(|b| backup::apply_restore(&dir, &b));
     let store =
         store::Store::open(&dir.join("pega.db")).expect("no se pudo abrir la base de datos");
+    // Al cargar se aplica el idioma de los ajustes; los avisos se arman después.
     let mut loaded = state::State::load(store).expect("no se pudo leer la base de datos");
-    loaded.notice = notice;
+    loaded.notice = restored.map(|r| match r {
+        Ok(kept) => tr!(
+            "Respaldo restaurado. La base anterior quedó en {}",
+            "Backup restored. The previous database is at {}",
+            kept.display()
+        ),
+        Err(e) => tr!(
+            "No se restauró el respaldo: {e}",
+            "The backup wasn't restored: {e}"
+        ),
+    });
     let state = Arc::new(Mutex::new(loaded));
 
     // `--hidden` para arrancar con Windows sin mostrar la ventana.

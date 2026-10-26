@@ -2,7 +2,9 @@
 //! copia en texto plano en disco, y cada clip se guarda cifrado como cualquier otro.
 //! Se puede repetir: lo que ya está (mismo tablero, nombre y contenido) no se duplica.
 
+use crate::i18n::t;
 use crate::state::State;
+use crate::tr;
 use rusqlite::{Connection, MAIN_DB};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -71,13 +73,31 @@ fn read_items(conn: &Connection) -> rusqlite::Result<HashMap<String, Item>> {
 }
 
 pub fn import_pastebar(state: &mut State) -> Result<Summary, String> {
-    let path = pastebar_db().ok_or("No se encontró la base de PasteBar")?;
+    let path = pastebar_db().ok_or(t(
+        "No se encontró la base de PasteBar",
+        "PasteBar's database wasn't found",
+    ))?;
     // fs::read comparte lectura y escritura: funciona aunque PasteBar esté abierto.
-    let bytes = std::fs::read(&path).map_err(|e| format!("No se pudo leer PasteBar: {e}"))?;
+    let bytes = std::fs::read(&path).map_err(|e| {
+        tr!(
+            "No se pudo leer PasteBar: {e}",
+            "Couldn't read PasteBar: {e}"
+        )
+    })?;
     let mut conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
     conn.deserialize_read_exact(MAIN_DB, &bytes[..], bytes.len(), true)
-        .map_err(|e| format!("La base de PasteBar no se pudo abrir: {e}"))?;
-    let items = read_items(&conn).map_err(|e| format!("Formato de PasteBar inesperado: {e}"))?;
+        .map_err(|e| {
+            tr!(
+                "La base de PasteBar no se pudo abrir: {e}",
+                "PasteBar's database couldn't be opened: {e}"
+            )
+        })?;
+    let items = read_items(&conn).map_err(|e| {
+        tr!(
+            "Formato de PasteBar inesperado: {e}",
+            "Unexpected PasteBar format: {e}"
+        )
+    })?;
     drop(conn);
     drop(bytes);
 
@@ -163,7 +183,7 @@ pub fn import_pastebar(state: &mut State) -> Result<Summary, String> {
                         summary.boards += 1;
                         state
                             .add_board(&name)
-                            .ok_or("No se pudo crear un tablero")?
+                            .ok_or(t("No se pudo crear un tablero", "Couldn't create a board"))?
                     }
                 };
                 board_ids.insert(name, id);

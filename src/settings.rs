@@ -4,6 +4,8 @@
 /// Separa los elementos de una lista dentro de un valor (no aparece en texto normal).
 const LIST_SEP: char = '\u{1f}';
 
+use crate::i18n::t;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Hotkey {
     pub ctrl: bool,
@@ -108,17 +110,24 @@ fn vk_name(vk: u16) -> String {
     match vk {
         0x41..=0x5A | 0x30..=0x39 => char::from(vk as u8).to_string(),
         0x70..=0x7B => format!("F{}", vk - 0x6F),
-        0x20 => "Espacio".into(),
+        0x20 => t("Espacio", "Space").into(),
         0x2D => "Insert".into(),
-        0x24 => "Inicio".into(),
-        0x23 => "Fin".into(),
-        0x21 => "RePág".into(),
-        0x22 => "AvPág".into(),
+        0x24 => t("Inicio", "Home").into(),
+        0x23 => t("Fin", "End").into(),
+        0x21 => t("RePág", "PgUp").into(),
+        0x22 => t("AvPág", "PgDn").into(),
         0xBE => ".".into(),
         0xBC => ",".into(),
         0xBD => "-".into(),
         _ => format!("0x{vk:02X}"),
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UiLang {
+    System,
+    Spanish,
+    English,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -148,6 +157,7 @@ pub struct Settings {
     pub pin: String,
     /// Minutos sin usar Pega para bloquearlo. 0 = solo al iniciar.
     pub lock_minutes: u32,
+    pub language: UiLang,
 }
 
 impl Default for Settings {
@@ -163,6 +173,7 @@ impl Default for Settings {
             mask_cards: false,
             pin: String::new(),
             lock_minutes: 5,
+            language: UiLang::System,
         }
     }
 }
@@ -185,6 +196,14 @@ impl Settings {
             format!("mask_cards={}", self.mask_cards as u8),
             format!("pin={}", self.pin),
             format!("lock_minutes={}", self.lock_minutes),
+            format!(
+                "language={}",
+                match self.language {
+                    UiLang::System => "system",
+                    UiLang::Spanish => "es",
+                    UiLang::English => "en",
+                }
+            ),
         ]
         .join("\n")
     }
@@ -217,6 +236,13 @@ impl Settings {
                 "mask_cards" => s.mask_cards = value == "1",
                 "pin" => s.pin = value.chars().filter(char::is_ascii_digit).collect(),
                 "lock_minutes" => s.lock_minutes = value.parse().unwrap_or(s.lock_minutes),
+                "language" => {
+                    s.language = match value {
+                        "es" => UiLang::Spanish,
+                        "en" => UiLang::English,
+                        _ => UiLang::System,
+                    }
+                }
                 _ => {}
             }
         }
@@ -267,6 +293,7 @@ mod tests {
             mask_cards: true,
             pin: "4321".into(),
             lock_minutes: 10,
+            language: UiLang::English,
         };
         assert!(Settings::decode(&s.encode()) == s);
     }

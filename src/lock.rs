@@ -4,7 +4,9 @@
 //! No hay temporizador corriendo: se pide un único repintado para cuando se cumpla
 //! el tiempo sin uso, y si la ventana estaba oculta se revisa al volver a mostrarla.
 
+use crate::i18n::t;
 use crate::settings::Settings;
+use crate::tr;
 use std::time::Duration;
 
 /// Intentos fallidos antes de hacer esperar.
@@ -68,7 +70,7 @@ impl Lock {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() * 0.3);
-                ui.heading("Pega está bloqueado");
+                ui.heading(t("Pega está bloqueado", "Pega is locked"));
                 ui.add_space(12.0);
                 let waiting = now < self.retry_at;
                 let field = ui.add_enabled(
@@ -83,7 +85,7 @@ impl Lock {
                 }
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let clicked = ui
-                    .add_enabled(!waiting, egui::Button::new("Desbloquear"))
+                    .add_enabled(!waiting, egui::Button::new(t("Desbloquear", "Unlock")))
                     .clicked();
                 if (enter || clicked) && !waiting {
                     self.try_unlock(settings, now);
@@ -92,7 +94,10 @@ impl Lock {
                     let secs = (self.retry_at - now).ceil();
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
-                        format!("Demasiados intentos. Espera {secs} s."),
+                        tr!(
+                            "Demasiados intentos. Espera {secs} s.",
+                            "Too many attempts. Wait {secs} s."
+                        ),
                     );
                     ui.ctx().request_repaint_after(Duration::from_secs(1));
                 } else if let Some(e) = &self.error {
@@ -110,7 +115,7 @@ impl Lock {
             self.last_input = now;
         } else {
             self.failures += 1;
-            self.error = Some("PIN incorrecto".into());
+            self.error = Some(t("PIN incorrecto", "Wrong PIN").into());
             if self.failures >= MAX_FAILURES {
                 self.failures = 0;
                 self.retry_at = now + WAIT_SECS;

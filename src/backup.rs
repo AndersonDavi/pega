@@ -5,6 +5,8 @@
 //! guarda la base actual con otro nombre y copia el respaldo en su lugar.
 
 use crate::crypto;
+use crate::i18n::t;
+use crate::tr;
 use rusqlite::{Connection, OpenFlags};
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -30,18 +32,24 @@ fn local_time() -> SYSTEMTIME {
 /// "pega-respaldo-2026-10-26.pegabak", con la fecha local.
 pub fn default_name() -> String {
     let t = local_time();
-    format!(
+    tr!(
         "pega-respaldo-{:04}-{:02}-{:02}.pegabak",
-        t.wYear, t.wMonth, t.wDay
+        "pega-backup-{:04}-{:02}-{:02}.pegabak",
+        t.wYear,
+        t.wMonth,
+        t.wDay
     )
 }
 
 /// Diálogo nativo de Windows para guardar (`save`) o abrir un respaldo.
 pub fn file_dialog(owner: isize, save: bool, default_name: &str) -> Option<PathBuf> {
     // Filtro: pares descripción\0patrón\0, terminado en doble \0.
-    let filter: Vec<u16> = "Respaldo de Pega (*.pegabak)\0*.pegabak\0Todos los archivos\0*.*\0\0"
-        .encode_utf16()
-        .collect();
+    let filter: Vec<u16> = t(
+        "Respaldo de Pega (*.pegabak)\0*.pegabak\0Todos los archivos\0*.*\0\0",
+        "Pega backup (*.pegabak)\0*.pegabak\0All files\0*.*\0\0",
+    )
+    .encode_utf16()
+    .collect();
     let def_ext = wide("pegabak");
     let mut buf = [0u16; 1024];
     for (i, u) in default_name.encode_utf16().take(buf.len() - 1).enumerate() {
@@ -78,16 +86,16 @@ pub fn file_dialog(owner: isize, save: bool, default_name: &str) -> Option<PathB
 /// Comprueba que el archivo sea un respaldo de Pega que este usuario pueda descifrar.
 pub fn validate(path: &Path) -> Result<(), String> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|_| "No se pudo abrir el archivo.".to_owned())?;
+        .map_err(|_| t("No se pudo abrir el archivo.", "Couldn't open the file.").to_owned())?;
     let tables: i64 = conn
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('history', 'boards', 'clips')",
             [],
             |r| r.get(0),
         )
-        .map_err(|_| "No es un respaldo de Pega.".to_owned())?;
+        .map_err(|_| t("No es un respaldo de Pega.", "This isn't a Pega backup.").to_owned())?;
     if tables != 3 {
-        return Err("No es un respaldo de Pega.".into());
+        return Err(t("No es un respaldo de Pega.", "This isn't a Pega backup.").into());
     }
     // Una muestra de cada tabla: si hay datos y ninguno se descifra, es de otro usuario.
     let sample: Vec<Vec<u8>> = [
@@ -99,10 +107,11 @@ pub fn validate(path: &Path) -> Result<(), String> {
     .filter_map(|q| conn.query_row(q, [], |r| r.get(0)).ok())
     .collect();
     if !sample.is_empty() && !sample.iter().any(|b| crypto::unprotect(b).is_some()) {
-        return Err(
-            "Este respaldo es de otro usuario de Windows (o está dañado): no se puede descifrar."
-                .into(),
-        );
+        return Err(t(
+            "Este respaldo es de otro usuario de Windows (o está dañado): no se puede descifrar.",
+            "This backup belongs to another Windows user (or is damaged): it can't be decrypted.",
+        )
+        .into());
     }
     Ok(())
 }
@@ -117,14 +126,23 @@ pub fn apply_restore(dir: &Path, backup: &Path) -> Result<PathBuf, String> {
         t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
     ));
     if db.exists() {
-        std::fs::rename(&db, &kept)
-            .map_err(|e| format!("No se pudo apartar la base actual: {e}"))?;
+        std::fs::rename(&db, &kept).map_err(|e| {
+            tr!(
+                "No se pudo apartar la base actual: {e}",
+                "Couldn't set the current database aside: {e}"
+            )
+        })?;
     }
     // El WAL de la base anterior ya se volcó antes de reiniciar; no debe aplicarse a la nueva.
     for ext in ["pega.db-wal", "pega.db-shm"] {
         let _ = std::fs::remove_file(dir.join(ext));
     }
-    std::fs::copy(backup, &db).map_err(|e| format!("No se pudo copiar el respaldo: {e}"))?;
+    std::fs::copy(backup, &db).map_err(|e| {
+        tr!(
+            "No se pudo copiar el respaldo: {e}",
+            "Couldn't copy the backup: {e}"
+        )
+    })?;
     Ok(kept)
 }
 
@@ -136,7 +154,12 @@ pub fn restart_with_restore(backup: &Path) -> Result<(), String> {
         .arg(backup)
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("No se pudo reiniciar Pega: {e}"))
+        .map_err(|e| {
+            tr!(
+                "No se pudo reiniciar Pega: {e}",
+                "Couldn't restart Pega: {e}"
+            )
+        })
 }
 
 #[cfg(test)]
