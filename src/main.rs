@@ -11,10 +11,12 @@ mod image;
 mod import;
 mod lock;
 mod mask;
+mod query;
 mod settings;
 mod settings_ui;
 mod state;
 mod store;
+mod transform;
 mod win;
 
 use egui_software_backend::{SoftwareBackendAppConfiguration, run_app_with_software_backend};

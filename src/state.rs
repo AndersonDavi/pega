@@ -131,11 +131,6 @@ pub fn fold(s: &str) -> String {
         .collect()
 }
 
-/// Todas las palabras de la búsqueda deben aparecer, en cualquier orden.
-pub fn matches(key: &str, terms: &[String]) -> bool {
-    terms.iter().all(|t| key.contains(t.as_str()))
-}
-
 impl State {
     pub fn load(store: Store) -> rusqlite::Result<Self> {
         let history = store
@@ -760,7 +755,7 @@ mod tests {
         let board = s.add_board("Info personal").unwrap();
         s.save_clip(None, board, "Cédula", "123");
         assert_eq!(s.clips[0].name, "Cédula");
-        assert!(matches("cedula 123", &["cedula".into()]));
+        assert!(crate::query::Query::parse("CÉDULA").matches_text(&s.clips[0].key));
         assert_eq!(fold(&s.clips[0].key), "cedula 123");
     }
 }

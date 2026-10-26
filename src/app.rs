@@ -9,10 +9,12 @@ use crate::i18n::t;
 use crate::image;
 use crate::lock::Lock;
 use crate::mask::mask;
+use crate::query::Query;
 use crate::settings::{Settings, Theme};
 use crate::settings_ui::{Outcome, SettingsWindow};
 use crate::state::{self, State};
 use crate::tr;
+use crate::transform;
 use crate::win;
 use egui::{Key, Modifiers, RichText, TextWrapMode, ViewportCommand};
 use egui_software_backend::SoftwareBackend;
@@ -81,6 +83,29 @@ struct DragBoard(i64);
 const BOARD_COLORS: &[u32] = &[
     0xEF4444, 0xF97316, 0xEAB308, 0x22C55E, 0x14B8A6, 0x3B82F6, 0x8B5CF6, 0xEC4899,
 ];
+
+/// Submenú "Pegar como…" con las transformaciones que aplican a este texto.
+fn paste_as_menu(ui: &mut egui::Ui, text: &str, private: bool, actions: &mut Vec<Action>) {
+    ui.menu_button(t("Pegar como…", "Paste as…"), |ui| {
+        for tr in transform::ALL {
+            if let Some(out) = tr.apply(text) {
+                if ui.button(tr.label()).clicked() {
+                    actions.push(Action::Copy {
+                        item: Item::Text(out),
+                        private,
+                        paste: true,
+                    });
+                }
+            }
+        }
+    });
+}
+
+/// Botón de acción que borra o reemplaza datos: rojo relleno con texto blanco.
+fn danger_button(text: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(egui::Color32::WHITE).strong())
+        .fill(egui::Color32::from_rgb(0xDC, 0x26, 0x26))
+}
 
 fn rgb(c: u32) -> egui::Color32 {
     egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
@@ -293,15 +318,13 @@ impl egui_software_backend::App for PegaApp {
             self.scroll_to = Some(0);
         }
 
-        let terms: Vec<String> = state::fold(&self.query)
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect();
+        let query = Query::parse(&self.query);
+        let now = state::now();
         // Fijados primero, luego por uso reciente.
         let mut hist: Vec<&state::Entry> = st
             .history
             .iter()
-            .filter(|e| state::matches(&e.key, &terms))
+            .filter(|e| query.matches_entry(e, st.app_name(e.app), now))
             .collect();
         hist.sort_by_key(|e| !e.pinned);
         if self.selected >= hist.len() {
@@ -448,10 +471,7 @@ impl egui_software_backend::App for PegaApp {
                                 self.confirm_clear = false;
                             }
                             if ui
-                                .button(
-                                    RichText::new(t("Sí, borrar", "Yes, delete"))
-                                        .color(ui.visuals().error_fg_color),
-                                )
+                                .add(danger_button(t("Sí, borrar", "Yes, delete")))
                                 .clicked()
                             {
                                 actions.push(Action::ClearHistory);
@@ -559,6 +579,9 @@ impl egui_software_backend::App for PegaApp {
                                     });
                                 }
                                 resp.context_menu(|ui| {
+                                    if e.image.is_none() {
+                                        paste_as_menu(ui, &e.text, false, &mut actions);
+                                    }
                                     if ui.button(t("Pegar", "Paste")).clicked() {
                                         actions.push(Action::Copy {
                                             item: item_of(e),
@@ -610,7 +633,7 @@ impl egui_software_backend::App for PegaApp {
                             }
                         });
                         if hist.is_empty() {
-                            ui.weak(if terms.is_empty() {
+                            ui.weak(if self.query.trim().is_empty() {
                                 t(
                                     "Copia algo y aparecerá aquí.",
                                     "Copy something and it will show up here.",
@@ -656,13 +679,17 @@ impl egui_software_backend::App for PegaApp {
                 let dragging_clip = egui::DragAndDrop::has_payload_of_type::<DragClip>(&ctx);
                 let dragging_board = egui::DragAndDrop::has_payload_of_type::<DragBoard>(&ctx);
                 for b in &st.boards {
-                    let board_hit = state::matches(&state::fold(&b.name), &terms);
+                    // Filtros de historial (app:, tipo:, hace:…): los tableros no aplican.
+                    if query.has_history_filters() {
+                        break;
+                    }
+                    let board_hit = query.matches_text(&state::fold(&b.name));
                     let clips: Vec<&state::Clip> = st
                         .clips
                         .iter()
-                        .filter(|c| c.board_id == b.id && (board_hit || state::matches(&c.key, &terms)))
+                        .filter(|c| c.board_id == b.id && (board_hit || query.matches_text(&c.key)))
                         .collect();
-                    if !terms.is_empty() && clips.is_empty() && !board_hit {
+                    if !query.terms.is_empty() && clips.is_empty() && !board_hit {
                         continue;
                     }
                     let accent = b.color.map(rgb);
@@ -778,6 +805,7 @@ impl egui_software_backend::App for PegaApp {
                                     });
                                 }
                                 resp.context_menu(|ui| {
+                                    paste_as_menu(ui, &c.text, true, &mut actions);
                                     if ui.button(t("Editar", "Edit")).clicked() {
                                         self.editor = Some(Editor {
                                             id: Some(c.id),
@@ -886,7 +914,7 @@ impl egui_software_backend::App for PegaApp {
                         "Your current database is kept aside, just in case. Pega will restart.",
                     ));
                     ui.horizontal(|ui| {
-                        if ui.button(t("Restaurar", "Restore")).clicked() {
+                        if ui.add(danger_button(t("Restaurar", "Restore"))).clicked() {
                             actions.push(Action::Restore(path.clone()));
                             close = true;
                         }
