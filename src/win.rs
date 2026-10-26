@@ -42,7 +42,7 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     EnumThreadWindows, FindWindowW, GetCursorPos, GetForegroundWindow, GetMessageW,
-    GetSystemMetrics, GetWindowTextW, GetWindowThreadProcessId, IMAGE_ICON, IsWindow,
+    GetSystemMetrics, GetWindowTextW, GetWindowThreadProcessId, HWND_MESSAGE, IMAGE_ICON, IsWindow,
     IsWindowVisible, KillTimer, LR_DEFAULTCOLOR, LoadImageW, MF_CHECKED, MF_SEPARATOR, MF_STRING,
     MSG, PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOW,
     SetForegroundWindow, SetTimer, ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
@@ -672,6 +672,35 @@ pub fn write_text(text: &str, private: bool) -> bool {
         }
     }
     true
+}
+
+/// Para pega-cli: una ventana de solo mensajes como dueña del portapapeles (sin ella,
+/// Windows no deja escribir). No escucha nada ni registra atajos.
+pub fn init_cli_clipboard() {
+    unsafe {
+        let class = wide("PegaCli");
+        let hinstance = GetModuleHandleW(ptr::null());
+        let mut wc: WNDCLASSW = mem::zeroed();
+        wc.lpfnWndProc = Some(DefWindowProcW);
+        wc.hInstance = hinstance;
+        wc.lpszClassName = class.as_ptr();
+        RegisterClassW(&wc);
+        let hwnd = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            ptr::null(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            HWND_MESSAGE,
+            ptr::null_mut(),
+            hinstance,
+            ptr::null(),
+        );
+        LISTENER_HWND.store(hwnd as isize, Relaxed);
+    }
 }
 
 /// Texto que hay ahora en el portapapeles (para la variable {portapapeles}).

@@ -49,6 +49,8 @@ fn name_at(r: &rusqlite::Row, i: usize) -> Result<Name> {
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
+        // pega.exe y pega-cli.exe pueden escribir a la vez: esperar en vez de fallar.
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
         // auto_vacuum tiene que ir antes de crear tablas; con INCREMENTAL el archivo
         // devuelve el espacio libre en vez de quedarse inflado como el de PasteBar.
         conn.execute_batch(

@@ -56,6 +56,15 @@ El ejecutable queda en `%TEMP%\pega-target\release\pega.exe` (se puede cambiar c
 
 `pega.exe --hidden` arranca sin mostrar la ventana.
 
+## Desde la terminal
+
+```bat
+pega-cli list 5           :: últimas 5 copias
+pega-cli search lang:json :: busca (acepta app:, lang:, tipo:, fijado, hace:2h)
+pega-cli copy 3           :: copia la entrada 3
+pega-cli clip Cedula      :: copia un clip de tablero
+```
+
 ## Cómo está hecho
 
 - `src/win.rs`: Win32 directo. Escucha el portapapeles por eventos (`AddClipboardFormatListener`, sin sondeo),
