@@ -1,20 +1,33 @@
 # Pega
 
-Gestor de portapapeles para Windows, nativo y liviano. Escrito en Rust.
+![Pega: el portapapeles de Windows, liviano y privado](docs/banner.jpg)
+
+Gestor de portapapeles para Windows, nativo y liviano. Escrito en Rust. Guarda todo lo que
+copias (texto e imágenes), cifrado, y lo tienes a un atajo de distancia.
 
 > **Beta.** Funciona y se usa a diario, pero aún no está pulido ni firmado (Windows SmartScreen
 > avisará al abrirlo). Los errores y sugerencias son bienvenidos en
 > [Issues](https://github.com/AndersonDavi/pega/issues).
 
-Nace como reemplazo de PasteBar (Tauri + WebView2): la misma idea de historial y tableros,
-pero en un solo proceso sin navegador embebido.
+**[Descargar](https://github.com/AndersonDavi/pega/releases)**: descomprimir y abrir `pega.exe`. No necesita instalación.
 
-| | PasteBar 0.6.2 | Pega |
-|---|---|---|
-| RAM privada, oculto en la bandeja | ~340 MB (7 procesos) | ~3-5 MB (1 proceso) |
-| RAM privada, ventana abierta | ~340 MB | ~7 MB |
-| Ejecutable | 53 MB | ~6 MB |
-| Datos en disco | SQLite en texto plano | SQLite cifrado con DPAPI |
+![Ventana de Pega con historial y tableros](docs/captura.png)
+
+## Consumo
+
+| | Pega | Ditto 3.25 | PasteBar 0.6.2 |
+|---|---|---|---|
+| RAM, oculto en la bandeja | **~5 MB** (1 proceso) | — | ~340 MB (7 procesos) |
+| RAM, ventana abierta | **~7 MB** | ~8,5 MB | ~340 MB |
+| CPU en reposo | 0 % | ~0 % | — |
+| Historial en disco | **cifrado (DPAPI)** | texto plano | texto plano |
+
+Medido en el mismo PC con Windows 11 (octubre de 2026), memoria privada de todos los procesos de
+cada app (`PrivateMemorySize64`). Son cifras orientativas: cambian con el tamaño del historial y
+la versión de cada programa.
+
+Pega nace como reemplazo de PasteBar (Tauri + WebView2): la misma idea de historial y tableros,
+pero en un solo proceso sin navegador embebido.
 
 ## Qué hace
 
