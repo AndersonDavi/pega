@@ -100,6 +100,7 @@ pub struct State {
     pub apps: Vec<(i64, String)>,
     pub settings: Settings,
     pub hotkey_ok: bool,
+    pub plain_hotkey_ok: bool,
     pub error: Option<String>,
     /// Aviso para mostrar una vez en la interfaz (por ejemplo, tras restaurar).
     pub notice: Option<String>,
@@ -227,6 +228,7 @@ impl State {
             apps,
             settings,
             hotkey_ok: false,
+            plain_hotkey_ok: true,
             error: None,
             notice: None,
         };
@@ -265,7 +267,8 @@ impl State {
 
     /// Guarda ajustes nuevos y aplica los límites. Devuelve si cambió el atajo.
     pub fn save_settings(&mut self, new: Settings) -> bool {
-        let hotkey_changed = new.hotkey != self.settings.hotkey;
+        let hotkey_changed =
+            new.hotkey != self.settings.hotkey || new.plain_hotkey != self.settings.plain_hotkey;
         match crypto::protect_str(&new.encode()) {
             Some(enc) => {
                 let r = self.store.set_meta(SETTINGS_KEY, &enc);

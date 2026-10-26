@@ -71,12 +71,42 @@ enum Action {
     ImportPasteBar,
     SaveSettings(Settings),
     Lock,
+    PasteSequence(Vec<(String, bool)>),
     Backup,
     PickRestore,
     Restore(PathBuf),
     Hide,
     Quit,
 }
+
+/// Elemento de la selección múltiple (Ctrl+clic).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sel {
+    Hist(i64),
+    Clip(i64),
+}
+
+/// Agrega o quita de la selección; guarda el texto para pegarlo en ese orden.
+fn toggle_multi(multi: &mut Vec<(Sel, String, bool)>, sel: Sel, text: &str, private: bool) {
+    match multi.iter().position(|(s, ..)| *s == sel) {
+        Some(i) => {
+            multi.remove(i);
+        }
+        None => multi.push((sel, text.to_owned(), private)),
+    }
+}
+
+const QUICK_KEYS: [Key; 9] = [
+    Key::Num1,
+    Key::Num2,
+    Key::Num3,
+    Key::Num4,
+    Key::Num5,
+    Key::Num6,
+    Key::Num7,
+    Key::Num8,
+    Key::Num9,
+];
 
 /// Lo que se arrastra: un clip o un tablero (por id).
 struct DragClip(i64);
@@ -157,6 +187,8 @@ pub struct PegaApp {
     /// Respaldo elegido, esperando confirmación para restaurar.
     confirm_restore: Option<PathBuf>,
     template_form: Option<TemplateForm>,
+    /// Selección múltiple con Ctrl+clic, en el orden en que se eligió.
+    multi: Vec<(Sel, String, bool)>,
 }
 
 /// Espaciado, esquinas y el azul del ícono como acento, para ambos temas.
@@ -191,6 +223,7 @@ impl PegaApp {
             styled: false,
             confirm_restore: None,
             template_form: None,
+            multi: Vec::new(),
             state,
             query: String::new(),
             selected: 0,
@@ -384,8 +417,23 @@ impl egui_software_backend::App for PegaApp {
                     });
                 }
             }
+            // Ctrl+1…9: pega directo esa entrada del historial (la fila muestra su número).
+            let quick = ctx.input_mut(|i| {
+                QUICK_KEYS
+                    .iter()
+                    .position(|k| i.consume_key(Modifiers::CTRL, *k))
+            });
+            if let Some(e) = quick.and_then(|n| hist.get(n)) {
+                actions.push(Action::Copy {
+                    item: item_of(e),
+                    private: false,
+                    paste: true,
+                });
+            }
             if esc {
-                if self.query.is_empty() {
+                if !self.multi.is_empty() {
+                    self.multi.clear();
+                } else if self.query.is_empty() {
                     actions.push(Action::Hide);
                 } else {
                     self.query.clear();
@@ -472,6 +520,36 @@ impl egui_software_backend::App for PegaApp {
                     ),
                 );
             }
+            if !st.plain_hotkey_ok {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    t(
+                        "El atajo de pegar sin formato está ocupado por otra app. Cámbialo en Ajustes.",
+                        "The paste-as-plain-text shortcut is taken by another app. Change it in Settings.",
+                    ),
+                );
+            }
+            if !self.multi.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.strong(tr!("{} seleccionados", "{} selected", self.multi.len()));
+                    if ui
+                        .button(t("Pegar en secuencia (Tab entre cada uno)", "Paste in sequence (Tab between)"))
+                        .clicked()
+                    {
+                        let items = self.multi.iter().map(|(_, text, private)| (text.clone(), *private)).collect();
+                        actions.push(Action::PasteSequence(items));
+                    }
+                    if ui.button(t("Pegar unidos", "Paste joined")).clicked() {
+                        let text = self.multi.iter().map(|(_, t, _)| t.as_str()).collect::<Vec<_>>().join("\n");
+                        let private = self.multi.iter().any(|(_, _, p)| *p);
+                        actions.push(Action::Copy { item: Item::Text(text), private, paste: true });
+                        self.multi.clear();
+                    }
+                    if ui.button(t("Quitar selección", "Clear selection")).clicked() {
+                        self.multi.clear();
+                    }
+                });
+            }
             if let Some(err) = &st.error {
                 ui.colored_label(ui.visuals().error_fg_color, err);
             }
@@ -521,7 +599,18 @@ impl egui_software_backend::App for PegaApp {
                         // Filas a todo el ancho con el texto a la izquierda.
                         ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                             for (i, e) in hist.iter().enumerate() {
-                                let selected = i == self.selected;
+                                let in_multi =
+                                    self.multi.iter().any(|(s, ..)| *s == Sel::Hist(e.id));
+                                let selected = i == self.selected || in_multi;
+                                // Número de Ctrl+1…9 en las primeras filas.
+                                let num = egui::RichText::new(if i < 9 {
+                                    format!("{}", i + 1)
+                                } else {
+                                    " ".into()
+                                })
+                                .small()
+                                .weak()
+                                .monospace();
                                 let pin = if e.pinned { "📌 " } else { "" };
                                 let app = st.app_name(e.app);
                                 // "rust · chrome": lenguaje y app de origen.
@@ -544,12 +633,12 @@ impl egui_software_backend::App for PegaApp {
                                             Some(tex) => ui.add(
                                                 egui::Button::selectable(
                                                     selected,
-                                                    (egui::Image::new(&tex), label),
+                                                    (num, egui::Image::new(&tex), label),
                                                 )
                                                 .right_text(right),
                                             ),
                                             None => ui.add(
-                                                egui::Button::selectable(selected, label)
+                                                egui::Button::selectable(selected, (num, label))
                                                     .right_text(right),
                                             ),
                                         }
@@ -557,7 +646,7 @@ impl egui_software_backend::App for PegaApp {
                                     None => ui.add(
                                         egui::Button::selectable(
                                             selected,
-                                            format!("{pin}{}", preview(&masked(&e.text))),
+                                            (num, format!("{pin}{}", preview(&masked(&e.text)))),
                                         )
                                         .right_text(right)
                                         .min_size(egui::vec2(0.0, row_h)),
@@ -584,7 +673,18 @@ impl egui_software_backend::App for PegaApp {
                                 if scroll_to == Some(i) {
                                     resp.scroll_to_me(None);
                                 }
-                                if resp.double_clicked() {
+                                let ctrl = ui.input(|inp| inp.modifiers.ctrl);
+                                if resp.clicked() && ctrl {
+                                    // Ctrl+clic: selección múltiple (solo texto).
+                                    if e.image.is_none() {
+                                        toggle_multi(
+                                            &mut self.multi,
+                                            Sel::Hist(e.id),
+                                            &e.text,
+                                            false,
+                                        );
+                                    }
+                                } else if resp.double_clicked() {
                                     actions.push(Action::Copy {
                                         item: item_of(e),
                                         private: false,
@@ -794,6 +894,11 @@ impl egui_software_backend::App for PegaApp {
                                 if let Some(color) = accent {
                                     chip = chip.fill(color.gamma_multiply(0.22));
                                 }
+                                if self.multi.iter().any(|(s, ..)| *s == Sel::Clip(c.id)) {
+                                    chip = chip
+                                        .fill(ui.visuals().selection.bg_fill)
+                                        .stroke(egui::Stroke::new(1.5, egui::Color32::WHITE));
+                                }
                                 let resp = ui
                                     .add(chip)
                                     .interact(egui::Sense::drag())
@@ -811,7 +916,9 @@ impl egui_software_backend::App for PegaApp {
                                 if let Some(p) = resp.dnd_release_payload::<DragClip>() {
                                     actions.push(Action::MoveClip { id: p.0, board_id: b.id, before: Some(c.id) });
                                 }
-                                if resp.double_clicked() {
+                                if resp.clicked() && ui.input(|inp| inp.modifiers.ctrl) {
+                                    toggle_multi(&mut self.multi, Sel::Clip(c.id), &c.text, true);
+                                } else if resp.double_clicked() {
                                     actions.push(Action::Copy {
                                         item: Item::Template(c.text.clone()),
                                         private: true,
@@ -1104,6 +1211,10 @@ impl PegaApp {
                 }
                 Action::Hide => win::hide(ctx),
                 Action::Lock => self.lock.lock_now(),
+                Action::PasteSequence(items) => {
+                    self.multi.clear();
+                    win::paste_sequence(ctx, items);
+                }
                 Action::Backup => {
                     let Some(path) =
                         backup::file_dialog(win::app_hwnd(), true, &backup::default_name())
@@ -1196,6 +1307,7 @@ impl PegaApp {
                         Action::Copy { .. }
                         | Action::ImportPasteBar
                         | Action::Lock
+                        | Action::PasteSequence(_)
                         | Action::Backup
                         | Action::PickRestore
                         | Action::Restore(_)

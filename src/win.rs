@@ -4,6 +4,7 @@
 use crate::autostart;
 use crate::i18n::t;
 use crate::image::{self, Rgba};
+use crate::settings::Hotkey;
 use crate::state::{self, MAX_TEXT_BYTES, State};
 use crate::tr;
 use egui::ViewportCommand;
@@ -30,8 +31,9 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL,
-    MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, SendInput, UnregisterHotKey, VK_CONTROL,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MOD_ALT,
+    MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, SendInput, UnregisterHotKey,
+    VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_TAB,
 };
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
@@ -53,6 +55,8 @@ const VK_V: u16 = 0x56;
 const CF_UNICODETEXT: u32 = 13;
 const CF_DIB: u32 = 8;
 const HOTKEY_ID: i32 = 1;
+/// Atajo de "pegar sin formato".
+const PLAIN_HOTKEY_ID: i32 = 2;
 /// Otra instancia de Pega pide que esta se muestre.
 const WM_SHOW: u32 = WM_APP + 1;
 /// Clics sobre el ícono de la bandeja.
@@ -240,6 +244,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             unsafe { toggle(&shared.ctx) };
             0
         }
+        WM_HOTKEY if wparam as i32 == PLAIN_HOTKEY_ID => {
+            paste_plain();
+            0
+        }
         WM_SHOW => {
             unsafe { show(&shared.ctx) };
             0
@@ -275,23 +283,35 @@ fn hotkey_label() -> String {
 /// (Re)registra el atajo de los ajustes y actualiza el texto de la bandeja.
 unsafe fn apply_hotkey(hwnd: HWND) {
     let Some(shared) = SHARED.get() else { return };
-    let hk = shared.state.lock().unwrap().settings.hotkey;
-    let mut mods = MOD_NOREPEAT;
-    for (on, m) in [
-        (hk.ctrl, MOD_CONTROL),
-        (hk.alt, MOD_ALT),
-        (hk.shift, MOD_SHIFT),
-        (hk.win, MOD_WIN),
-    ] {
-        if on {
-            mods |= m;
-        }
-    }
-    let ok = unsafe {
-        UnregisterHotKey(hwnd, HOTKEY_ID);
-        RegisterHotKey(hwnd, HOTKEY_ID, mods, hk.vk as u32) != 0
+    let (hk, plain) = {
+        let st = shared.state.lock().unwrap();
+        (st.settings.hotkey, st.settings.plain_hotkey)
     };
-    shared.state.lock().unwrap().hotkey_ok = ok;
+    let register = |id: i32, hk: Hotkey| -> bool {
+        let mut mods = MOD_NOREPEAT;
+        for (on, m) in [
+            (hk.ctrl, MOD_CONTROL),
+            (hk.alt, MOD_ALT),
+            (hk.shift, MOD_SHIFT),
+            (hk.win, MOD_WIN),
+        ] {
+            if on {
+                mods |= m;
+            }
+        }
+        unsafe { RegisterHotKey(hwnd, id, mods, hk.vk as u32) != 0 }
+    };
+    unsafe {
+        UnregisterHotKey(hwnd, HOTKEY_ID);
+        UnregisterHotKey(hwnd, PLAIN_HOTKEY_ID);
+    }
+    let ok = register(HOTKEY_ID, hk);
+    let plain_ok = plain.is_none_or(|p| register(PLAIN_HOTKEY_ID, p));
+    {
+        let mut st = shared.state.lock().unwrap();
+        st.hotkey_ok = ok;
+        st.plain_hotkey_ok = plain_ok;
+    }
     if TRAY_OK.load(Relaxed) {
         let mut nid = tray_data(hwnd);
         nid.uFlags = NIF_TIP;
@@ -300,7 +320,6 @@ unsafe fn apply_hotkey(hwnd: HWND) {
     }
     shared.ctx.request_repaint();
 }
-
 /// La interfaz cambió el atajo en los ajustes.
 pub fn reload_hotkey() {
     unsafe { PostMessageW(LISTENER_HWND.load(Relaxed) as HWND, WM_REHOTKEY, 0, 0) };
@@ -656,6 +675,68 @@ pub fn paste_into_previous(ctx: &egui::Context) {
         SetForegroundWindow(prev);
         thread::sleep(Duration::from_millis(40));
         send_ctrl_v();
+    });
+}
+
+/// Espera (hasta 2 s) a que se suelten Ctrl, Alt, Shift y Win: si no, el Ctrl+V que
+/// mandamos llegaría combinado con las teclas del atajo que el usuario aún sostiene.
+fn wait_modifiers_released() {
+    for _ in 0..100 {
+        let held = [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN]
+            .iter()
+            .any(|&k| unsafe { GetAsyncKeyState(k as i32) } < 0);
+        if !held {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Atajo global: lo copiado pasa a texto plano (sin formato, sin imágenes) y se pega
+/// en la ventana que esté al frente.
+fn paste_plain() {
+    let Some(text) = current_text() else { return };
+    thread::spawn(move || {
+        wait_modifiers_released();
+        if write_text(&text, false) {
+            thread::sleep(Duration::from_millis(30));
+            unsafe { send_ctrl_v() };
+        }
+    });
+}
+
+/// Pega varios textos seguidos en la ventana anterior, con Tab entre uno y otro
+/// (sirve para llenar formularios campo por campo).
+pub fn paste_sequence(ctx: &egui::Context, items: Vec<(String, bool)>) {
+    hide(ctx);
+    let prev = PREV_FG.load(Relaxed);
+    thread::spawn(move || unsafe {
+        let prev = prev as HWND;
+        if prev.is_null() || IsWindow(prev) == 0 {
+            return;
+        }
+        thread::sleep(Duration::from_millis(60));
+        SetForegroundWindow(prev);
+        thread::sleep(Duration::from_millis(60));
+        let last = items.len().saturating_sub(1);
+        for (i, (text, private)) in items.iter().enumerate() {
+            if !write_text(text, *private) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(30));
+            send_ctrl_v();
+            // Tiempo para que la app procese el pegado antes de cambiar el portapapeles.
+            thread::sleep(Duration::from_millis(150));
+            if i < last {
+                let tab = [key(VK_TAB, false), key(VK_TAB, true)];
+                SendInput(
+                    tab.len() as u32,
+                    tab.as_ptr(),
+                    mem::size_of::<INPUT>() as i32,
+                );
+                thread::sleep(Duration::from_millis(60));
+            }
+        }
     });
 }
 

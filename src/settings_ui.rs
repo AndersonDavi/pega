@@ -12,8 +12,25 @@ pub struct SettingsWindow {
     pin_new: String,
     pin_confirm: String,
     changing_pin: bool,
-    capturing: bool,
+    /// Qué atajo se está capturando (el de abrir o el de pegar sin formato).
+    capturing: Option<Target>,
     warning: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Open,
+    Plain,
+}
+
+fn capture_hint(ui: &mut egui::Ui) {
+    ui.label(
+        egui::RichText::new(t(
+            "Presiona la combinación… (Esc cancela)",
+            "Press the combination… (Esc cancels)",
+        ))
+        .italics(),
+    );
 }
 
 pub enum Outcome {
@@ -31,7 +48,7 @@ impl SettingsWindow {
             pin_new: String::new(),
             pin_confirm: String::new(),
             changing_pin: false,
-            capturing: false,
+            capturing: None,
             warning: None,
         }
     }
@@ -39,8 +56,8 @@ impl SettingsWindow {
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
         let mut outcome = Outcome::Open;
         let mut open = true;
-        if self.capturing {
-            self.capture_hotkey(ctx);
+        if let Some(target) = self.capturing {
+            self.capture_hotkey(ctx, target);
         }
         egui::Window::new(t("Ajustes", "Settings"))
             .collapsible(false)
@@ -54,16 +71,40 @@ impl SettingsWindow {
                     .show(ui, |ui| {
                         ui.label(t("Atajo para abrir", "Shortcut to open"));
                         ui.horizontal(|ui| {
-                            if self.capturing {
-                                ui.label(
-                                    egui::RichText::new(t("Presiona la combinación… (Esc cancela)", "Press the combination… (Esc cancels)"))
-                                        .italics(),
-                                );
+                            if self.capturing == Some(Target::Open) {
+                                capture_hint(ui);
                             } else {
                                 ui.monospace(self.draft.hotkey.label());
                                 if ui.button(t("Cambiar", "Change")).clicked() {
-                                    self.capturing = true;
+                                    self.capturing = Some(Target::Open);
                                     self.warning = None;
+                                }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label(t("Pegar sin formato", "Paste as plain text")).on_hover_text(t(
+                            "Desde cualquier app: pega lo copiado como texto plano.",
+                            "From any app: pastes what you copied as plain text.",
+                        ));
+                        ui.horizontal(|ui| {
+                            if self.capturing == Some(Target::Plain) {
+                                capture_hint(ui);
+                            } else {
+                                match self.draft.plain_hotkey {
+                                    Some(hk) => {
+                                        ui.monospace(hk.label());
+                                    }
+                                    None => {
+                                        ui.weak(t("Desactivado", "Off"));
+                                    }
+                                }
+                                if ui.button(t("Cambiar", "Change")).clicked() {
+                                    self.capturing = Some(Target::Plain);
+                                    self.warning = None;
+                                }
+                                if self.draft.plain_hotkey.is_some() && ui.button(t("Quitar", "Remove")).clicked() {
+                                    self.draft.plain_hotkey = None;
                                 }
                             }
                         });
@@ -260,7 +301,7 @@ impl SettingsWindow {
         });
     }
 
-    fn capture_hotkey(&mut self, ctx: &egui::Context) {
+    fn capture_hotkey(&mut self, ctx: &egui::Context, target: Target) {
         let pressed = ctx.input_mut(|i| {
             let found = i.events.iter().find_map(|e| match e {
                 egui::Event::Key {
@@ -278,7 +319,7 @@ impl SettingsWindow {
         });
         let Some((key, mods)) = pressed else { return };
         if key == egui::Key::Escape {
-            self.capturing = false;
+            self.capturing = None;
             return;
         }
         let Some(vk) = settings::vk_from_egui(key) else {
@@ -298,9 +339,24 @@ impl SettingsWindow {
             win: false,
             vk,
         };
-        if hk.is_valid() {
-            self.draft.hotkey = hk;
-            self.capturing = false;
+        let other = match target {
+            Target::Open => self.draft.plain_hotkey,
+            Target::Plain => Some(self.draft.hotkey),
+        };
+        if other == Some(hk) {
+            self.warning = Some(
+                t(
+                    "Ese atajo ya está en uso en Pega.",
+                    "That shortcut is already used in Pega.",
+                )
+                .into(),
+            );
+        } else if hk.is_valid() {
+            match target {
+                Target::Open => self.draft.hotkey = hk,
+                Target::Plain => self.draft.plain_hotkey = Some(hk),
+            }
+            self.capturing = None;
             self.warning = None;
         } else {
             self.warning = Some(

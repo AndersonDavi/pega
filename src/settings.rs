@@ -140,6 +140,8 @@ pub enum Theme {
 #[derive(Clone, PartialEq)]
 pub struct Settings {
     pub hotkey: Hotkey,
+    /// Atajo global que pega lo copiado como texto sin formato. None = desactivado.
+    pub plain_hotkey: Option<Hotkey>,
     pub theme: Theme,
     /// 0 = sin límite.
     pub max_texts: usize,
@@ -164,6 +166,13 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             hotkey: Hotkey::default(),
+            plain_hotkey: Some(Hotkey {
+                ctrl: true,
+                alt: true,
+                shift: true,
+                win: false,
+                vk: 0x56,
+            }),
             theme: Theme::System,
             max_texts: 1000,
             max_images: 100,
@@ -187,6 +196,11 @@ impl Settings {
         };
         [
             format!("hotkey={}", self.hotkey.encode()),
+            format!(
+                "plain_hotkey={}",
+                self.plain_hotkey
+                    .map_or_else(|| "none".to_owned(), |h| h.encode())
+            ),
             format!("theme={theme}"),
             format!("max_texts={}", self.max_texts),
             format!("max_images={}", self.max_images),
@@ -219,6 +233,15 @@ impl Settings {
                 "hotkey" => {
                     if let Some(h) = Hotkey::decode(value).filter(Hotkey::is_valid) {
                         s.hotkey = h;
+                    }
+                }
+                "plain_hotkey" => {
+                    s.plain_hotkey = if value == "none" {
+                        None
+                    } else {
+                        Hotkey::decode(value)
+                            .filter(Hotkey::is_valid)
+                            .or(s.plain_hotkey)
                     }
                 }
                 "theme" => {
@@ -284,6 +307,7 @@ mod tests {
                 win: false,
                 vk: 0x42,
             },
+            plain_hotkey: None,
             theme: Theme::Light,
             max_texts: 0,
             max_images: 7,
@@ -319,5 +343,11 @@ mod tests {
             .is_valid()
         );
         assert_eq!(Hotkey::default().label(), "Ctrl+Alt+V");
+        let d = Settings::default();
+        assert_eq!(
+            d.plain_hotkey.map(|h| h.label()).as_deref(),
+            Some("Ctrl+Alt+Shift+V")
+        );
+        assert!(Settings::decode("plain_hotkey=none").plain_hotkey.is_none());
     }
 }
