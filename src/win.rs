@@ -43,11 +43,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     EnumThreadWindows, FindWindowW, GetCursorPos, GetForegroundWindow, GetMessageW,
     GetSystemMetrics, GetWindowTextW, GetWindowThreadProcessId, IMAGE_ICON, IsWindow,
-    IsWindowVisible, LR_DEFAULTCOLOR, LoadImageW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG,
-    PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOW,
-    SetForegroundWindow, ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    TranslateMessage, WM_APP, WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
-    WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+    IsWindowVisible, KillTimer, LR_DEFAULTCOLOR, LoadImageW, MF_CHECKED, MF_SEPARATOR, MF_STRING,
+    MSG, PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOW,
+    SetForegroundWindow, SetTimer, ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenu, TranslateMessage, WM_APP, WM_CLIPBOARDUPDATE, WM_HOTKEY, WM_LBUTTONUP, WM_NULL,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 pub const WINDOW_TITLE: &str = "Pega";
@@ -63,6 +63,10 @@ const WM_SHOW: u32 = WM_APP + 1;
 const WM_TRAY: u32 = WM_APP + 2;
 /// Los ajustes cambiaron el atajo.
 const WM_REHOTKEY: u32 = WM_APP + 3;
+/// Cambió algo que afecta a lo temporal (ajustes, fijar, borrar): reprogramar el temporizador.
+const WM_RESCHEDULE: u32 = WM_APP + 4;
+/// Temporizador de las entradas que se borran solas.
+const TIMER_EXPIRE: usize = 1;
 const CLASS: &str = "PegaListener";
 const TRAY_ID: u32 = 1;
 const MENU_OPEN: usize = 1;
@@ -215,6 +219,7 @@ unsafe fn run() {
         add_tray(hwnd);
         AddClipboardFormatListener(hwnd);
         apply_hotkey(hwnd);
+        schedule_expiry(hwnd);
         let mut msg: MSG = mem::zeroed();
         while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);
@@ -237,7 +242,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             };
             if changed {
                 shared.ctx.request_repaint();
+                unsafe { schedule_expiry(hwnd) };
             }
+            0
+        }
+        WM_TIMER if wparam == TIMER_EXPIRE => {
+            if shared.state.lock().unwrap().purge_expired() {
+                shared.ctx.request_repaint();
+            }
+            unsafe { schedule_expiry(hwnd) };
+            0
+        }
+        WM_RESCHEDULE => {
+            unsafe { schedule_expiry(hwnd) };
             0
         }
         WM_HOTKEY if wparam as i32 == HOTKEY_ID => {
@@ -320,6 +337,24 @@ unsafe fn apply_hotkey(hwnd: HWND) {
     }
     shared.ctx.request_repaint();
 }
+/// Un único temporizador hasta el próximo vencimiento; ninguno si no hay nada temporal.
+unsafe fn schedule_expiry(hwnd: HWND) {
+    let Some(shared) = SHARED.get() else { return };
+    let next = shared.state.lock().unwrap().next_expiry();
+    unsafe {
+        KillTimer(hwnd, TIMER_EXPIRE);
+        if let Some(at) = next {
+            // Entre 1 s y el máximo de Windows (~24 días).
+            let delay = (at - state::now()).clamp(1_000, 0x7FFF_FFFF) as u32;
+            SetTimer(hwnd, TIMER_EXPIRE, delay, None);
+        }
+    }
+}
+
+pub fn reschedule_expiry() {
+    unsafe { PostMessageW(LISTENER_HWND.load(Relaxed) as HWND, WM_RESCHEDULE, 0, 0) };
+}
+
 /// La interfaz cambió el atajo en los ajustes.
 pub fn reload_hotkey() {
     unsafe { PostMessageW(LISTENER_HWND.load(Relaxed) as HWND, WM_REHOTKEY, 0, 0) };

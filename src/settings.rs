@@ -160,6 +160,11 @@ pub struct Settings {
     /// Minutos sin usar Pega para bloquearlo. 0 = solo al iniciar.
     pub lock_minutes: u32,
     pub language: UiLang,
+    /// Minutos tras los que se borran los códigos de un solo uso y lo copiado desde
+    /// sensitive_apps. 0 = nunca.
+    pub expire_minutes: u32,
+    /// Apps cuyas copias se guardan, pero se borran solas a los expire_minutes.
+    pub sensitive_apps: Vec<String>,
 }
 
 impl Default for Settings {
@@ -183,6 +188,8 @@ impl Default for Settings {
             pin: String::new(),
             lock_minutes: 5,
             language: UiLang::System,
+            expire_minutes: 5,
+            sensitive_apps: Vec::new(),
         }
     }
 }
@@ -210,6 +217,8 @@ impl Settings {
             format!("mask_cards={}", self.mask_cards as u8),
             format!("pin={}", self.pin),
             format!("lock_minutes={}", self.lock_minutes),
+            format!("expire_minutes={}", self.expire_minutes),
+            format!("sensitive_apps={}", encode_list(&self.sensitive_apps)),
             format!(
                 "language={}",
                 match self.language {
@@ -259,6 +268,8 @@ impl Settings {
                 "mask_cards" => s.mask_cards = value == "1",
                 "pin" => s.pin = value.chars().filter(char::is_ascii_digit).collect(),
                 "lock_minutes" => s.lock_minutes = value.parse().unwrap_or(s.lock_minutes),
+                "expire_minutes" => s.expire_minutes = value.parse().unwrap_or(s.expire_minutes),
+                "sensitive_apps" => s.sensitive_apps = decode_list(value),
                 "language" => {
                     s.language = match value {
                         "es" => UiLang::Spanish,
@@ -286,6 +297,12 @@ fn decode_list(value: &str) -> Vec<String> {
 }
 
 impl Settings {
+    pub fn is_sensitive(&self, app: &str) -> bool {
+        self.sensitive_apps
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(app))
+    }
+
     pub fn is_excluded(&self, app: &str) -> bool {
         self.excluded_apps
             .iter()
@@ -318,6 +335,8 @@ mod tests {
             pin: "4321".into(),
             lock_minutes: 10,
             language: UiLang::English,
+            expire_minutes: 3,
+            sensitive_apps: vec!["banco.exe".into()],
         };
         assert!(Settings::decode(&s.encode()) == s);
     }

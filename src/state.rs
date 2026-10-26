@@ -115,6 +115,19 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
+/// ¿Parece un código de un solo uso? 4 a 6 dígitos, con a lo sumo un espacio o guion en
+/// medio ("123456", "123 456"). Cédulas y teléfonos son más largos y no entran.
+pub fn is_otp(text: &str) -> bool {
+    let t = text.trim();
+    let digits = t.chars().filter(char::is_ascii_digit).count();
+    let seps = t.chars().filter(|c| *c == ' ' || *c == '-').count();
+    (4..=6).contains(&digits)
+        && seps <= 1
+        && digits + seps == t.chars().count()
+        && t.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && t.chars().last().is_some_and(|c| c.is_ascii_digit())
+}
+
 /// Minúsculas y sin tildes: "Dirección" encuentra "direccion".
 pub fn fold(s: &str) -> String {
     s.chars()
@@ -235,6 +248,7 @@ impl State {
         state.encrypt_legacy_names(&plain_boards, &plain_clips)?;
         let mut state = state;
         state.purge_old();
+        state.purge_expired();
         Ok(state)
     }
 
@@ -380,7 +394,44 @@ impl State {
         }
     }
 
-    /// Borra lo no fijado más viejo que keep_days (0 = nunca).
+    /// Momento (ms) en que se borra sola una entrada, si es temporal: códigos de un solo
+    /// uso y copias de apps sensibles. Lo fijado no vence.
+    pub fn expiry_of(&self, e: &Entry) -> Option<i64> {
+        let minutes = self.settings.expire_minutes;
+        if minutes == 0 || e.pinned {
+            return None;
+        }
+        let sensitive = self
+            .app_name(e.app)
+            .is_some_and(|a| self.settings.is_sensitive(a));
+        (sensitive || (e.image.is_none() && is_otp(&e.text)))
+            .then(|| e.used_at + minutes as i64 * 60_000)
+    }
+
+    /// Próximo vencimiento, para programar un único temporizador (o ninguno).
+    pub fn next_expiry(&self) -> Option<i64> {
+        self.history.iter().filter_map(|e| self.expiry_of(e)).min()
+    }
+
+    /// Borra lo vencido. Devuelve si borró algo.
+    pub fn purge_expired(&mut self) -> bool {
+        let now = now();
+        let drop: Vec<i64> = self
+            .history
+            .iter()
+            .filter(|e| self.expiry_of(e).is_some_and(|t| t <= now))
+            .map(|e| e.id)
+            .collect();
+        if drop.is_empty() {
+            return false;
+        }
+        self.history.retain(|e| !drop.contains(&e.id));
+        let r = self.store.delete_history(&drop);
+        self.report(r);
+        true
+    }
+
+    /// Borra lo no fijado más viejo que `keep_days` (0 = nunca).
     fn purge_old(&mut self) {
         if self.settings.keep_days == 0 {
             return;
@@ -725,6 +776,57 @@ mod tests {
         set.keep_days = 7;
         s.save_settings(set);
         assert!(s.history.is_empty());
+    }
+
+    #[test]
+    fn otp_detection() {
+        for yes in ["1234", "123456", "123 456", "123-456", " 4821 "] {
+            assert!(is_otp(yes), "{yes}");
+        }
+        // Cédula, teléfono, años con texto, montos: no.
+        for no in [
+            "1098765432",
+            "3001234567",
+            "12345678",
+            "12 34 56",
+            "123",
+            "año 2026",
+            "12.345",
+            "-1234",
+        ] {
+            assert!(!is_otp(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn temporary_entries_expire() {
+        let mut s = state();
+        let mut set = s.settings.clone();
+        set.expire_minutes = 5;
+        set.sensitive_apps = vec!["banco.exe".into()];
+        s.save_settings(set);
+        s.capture("482193".into(), None);
+        s.capture("saldo 1.000".into(), Some("banco.exe".into()));
+        s.capture("normal".into(), Some("chrome.exe".into()));
+        assert_eq!(
+            s.history
+                .iter()
+                .filter(|e| s.expiry_of(e).is_some())
+                .count(),
+            2
+        );
+        assert!(s.next_expiry().is_some());
+        assert!(!s.purge_expired(), "aún no vencen");
+        for e in s.history.iter_mut() {
+            e.used_at -= 6 * 60_000;
+        }
+        assert!(s.purge_expired());
+        let left: Vec<&str> = s.history.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(left, ["normal"]);
+        assert!(
+            s.next_expiry().is_none(),
+            "sin temporales no hace falta temporizador"
+        );
     }
 
     #[test]

@@ -9,6 +9,8 @@ pub struct SettingsWindow {
     apps_text: String,
     /// Palabras a ocultar, una por línea.
     words_text: String,
+    /// Apps sensibles, una por línea.
+    sensitive_text: String,
     pin_new: String,
     pin_confirm: String,
     changing_pin: bool,
@@ -45,6 +47,7 @@ impl SettingsWindow {
             draft: current.clone(),
             apps_text: current.excluded_apps.join("\n"),
             words_text: current.mask_words.join("\n"),
+            sensitive_text: current.sensitive_apps.join("\n"),
             pin_new: String::new(),
             pin_confirm: String::new(),
             changing_pin: false,
@@ -173,6 +176,37 @@ impl SettingsWindow {
                     );
                     ui.end_row();
 
+                    ui.label(t("Borrar solos tras", "Auto-delete after")).on_hover_text(t(
+                        "Códigos de un solo uso (4 a 6 dígitos) y lo copiado desde las apps sensibles.",
+                        "One-time codes (4 to 6 digits) and copies from sensitive apps.",
+                    ));
+                    ui.horizontal(|ui| {
+                        let mut never = self.draft.expire_minutes == 0;
+                        if !never {
+                            ui.add(
+                                egui::DragValue::new(&mut self.draft.expire_minutes)
+                                    .range(1..=1440)
+                                    .suffix(" min"),
+                            );
+                        }
+                        if ui.checkbox(&mut never, t("Nunca", "Never")).changed() {
+                            self.draft.expire_minutes = if never { 0 } else { 5 };
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label(t("Apps sensibles", "Sensitive apps")).on_hover_text(t(
+                        "Un ejecutable por línea: sus copias se guardan, pero se borran solas.",
+                        "One executable per line: their copies are kept, but delete themselves.",
+                    ));
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.sensitive_text)
+                            .hint_text("banco.exe")
+                            .desired_rows(2)
+                            .desired_width(220.0),
+                    );
+                    ui.end_row();
+
                     ui.label("");
                     ui.checkbox(&mut self.draft.mask_cards, t("Ocultar números de tarjeta", "Hide card numbers"));
                     ui.end_row();
@@ -213,6 +247,12 @@ impl SettingsWindow {
                         let mut s = self.draft.clone();
                         s.excluded_apps = self
                             .apps_text
+                            .lines()
+                            .map(|l| l.trim().to_lowercase())
+                            .filter(|l| !l.is_empty())
+                            .collect();
+                        s.sensitive_apps = self
+                            .sensitive_text
                             .lines()
                             .map(|l| l.trim().to_lowercase())
                             .filter(|l| !l.is_empty())

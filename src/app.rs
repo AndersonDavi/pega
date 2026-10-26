@@ -614,10 +614,11 @@ impl egui_software_backend::App for PegaApp {
                                 let pin = if e.pinned { "📌 " } else { "" };
                                 let app = st.app_name(e.app);
                                 // "rust · chrome": lenguaje y app de origen.
-                                let tags: Vec<&str> = e
-                                    .lang
-                                    .map(code::Lang::name)
+                                let expires = st.expiry_of(e);
+                                let tags: Vec<&str> = expires
+                                    .map(|_| t("temporal", "temporary"))
                                     .into_iter()
+                                    .chain(e.lang.map(code::Lang::name))
                                     .chain(app.map(short_app))
                                     .collect();
                                 let right = egui::RichText::new(tags.join(" · ")).small().weak();
@@ -668,6 +669,16 @@ impl egui_software_backend::App for PegaApp {
                                         None => {
                                             ui.label(tooltip(&text, app, e.used_at));
                                         }
+                                    }
+                                    if let Some(at) = expires {
+                                        let mins = ((at - now) / 60_000).max(0) + 1;
+                                        ui.colored_label(
+                                            ui.visuals().warn_fg_color,
+                                            tr!(
+                                                "Se borra sola en {mins} min",
+                                                "Deletes itself in {mins} min"
+                                            ),
+                                        );
                                     }
                                 });
                                 if scroll_to == Some(i) {
@@ -1314,6 +1325,8 @@ impl PegaApp {
                         | Action::Hide
                         | Action::Quit => unreachable!(),
                     }
+                    // Fijar, borrar o cambiar ajustes mueve el próximo vencimiento.
+                    win::reschedule_expiry();
                 }
             }
         }
