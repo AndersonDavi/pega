@@ -1,0 +1,229 @@
+//! SQLite en disco. Solo ve bytes: el cifrado ocurre antes, en `state`.
+
+use rusqlite::{Connection, Result, params};
+use std::path::Path;
+
+pub struct Store {
+    conn: Connection,
+}
+
+pub const KIND_IMAGE: i64 = 1;
+
+pub struct HistoryRow {
+    pub id: i64,
+    pub kind: i64,
+    /// Solo para texto: de las imágenes no se carga el PNG completo hasta pegarlas.
+    pub data: Option<Vec<u8>>,
+    pub thumb: Option<Vec<u8>>,
+    pub hash: Option<i64>,
+    pub width: u32,
+    pub height: u32,
+    pub used_at: i64,
+    pub pinned: bool,
+}
+
+pub struct ClipRow {
+    pub id: i64,
+    pub board_id: i64,
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+impl Store {
+    pub fn open(path: &Path) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        // auto_vacuum tiene que ir antes de crear tablas; con INCREMENTAL el archivo
+        // devuelve el espacio libre en vez de quedarse inflado como el de PasteBar.
+        conn.execute_batch(
+            "PRAGMA auto_vacuum = INCREMENTAL;
+             PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA foreign_keys = ON;
+             PRAGMA secure_delete = ON;
+             CREATE TABLE IF NOT EXISTS history (
+                 id      INTEGER PRIMARY KEY,
+                 data    BLOB    NOT NULL,
+                 used_at INTEGER NOT NULL,
+                 pinned  INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS boards (
+                 id   INTEGER PRIMARY KEY,
+                 name TEXT    NOT NULL,
+                 pos  INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS clips (
+                 id       INTEGER PRIMARY KEY,
+                 board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+                 name     TEXT    NOT NULL,
+                 data     BLOB    NOT NULL,
+                 pos      INTEGER NOT NULL DEFAULT 0
+             );",
+        )?;
+        // Columnas de imágenes, agregadas después de la primera versión.
+        let existing: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('history')")?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_>>()?;
+        for (col, decl) in [
+            ("kind", "INTEGER NOT NULL DEFAULT 0"),
+            ("thumb", "BLOB"),
+            ("hash", "INTEGER"),
+            ("width", "INTEGER NOT NULL DEFAULT 0"),
+            ("height", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !existing.iter().any(|c| c == col) {
+                conn.execute_batch(&format!("ALTER TABLE history ADD COLUMN {col} {decl};"))?;
+            }
+        }
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS history_hash ON history(hash);")?;
+        Ok(Self { conn })
+    }
+
+    pub fn load_history(&self) -> Result<Vec<HistoryRow>> {
+        let mut st = self.conn.prepare(
+            "SELECT id, kind, CASE WHEN kind = 0 THEN data END, thumb, hash, width, height, used_at, pinned
+             FROM history ORDER BY used_at DESC",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(HistoryRow {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                data: r.get(2)?,
+                thumb: r.get(3)?,
+                hash: r.get(4)?,
+                width: r.get(5)?,
+                height: r.get(6)?,
+                used_at: r.get(7)?,
+                pinned: r.get(8)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn insert_image(
+        &self,
+        data: &[u8],
+        thumb: &[u8],
+        hash: i64,
+        width: u32,
+        height: u32,
+        used_at: i64,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO history (kind, data, thumb, hash, width, height, used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![KIND_IMAGE, data, thumb, hash, width, height, used_at],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Contenido completo (cifrado) de una entrada; para imágenes, el PNG.
+    pub fn history_data(&self, id: i64) -> Result<Vec<u8>> {
+        self.conn
+            .query_row("SELECT data FROM history WHERE id = ?1", [id], |r| r.get(0))
+    }
+
+    pub fn insert_history(&self, data: &[u8], used_at: i64) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO history (data, used_at) VALUES (?1, ?2)",
+            params![data, used_at],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn touch_history(&self, id: i64, used_at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE history SET used_at = ?2 WHERE id = ?1",
+            params![id, used_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_pinned(&self, id: i64, pinned: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE history SET pinned = ?2 WHERE id = ?1",
+            params![id, pinned],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_history(&self, ids: &[i64]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM history WHERE id = ?1", [id])?;
+        }
+        tx.commit()?;
+        self.reclaim()
+    }
+
+    pub fn load_boards(&self) -> Result<Vec<(i64, String)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, name FROM boards ORDER BY pos, id")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn load_clips(&self) -> Result<Vec<ClipRow>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, board_id, name, data FROM clips ORDER BY pos, id")?;
+        let rows = st.query_map([], |r| {
+            Ok(ClipRow {
+                id: r.get(0)?,
+                board_id: r.get(1)?,
+                name: r.get(2)?,
+                data: r.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn add_board(&self, name: &str, pos: i64) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO boards (name, pos) VALUES (?1, ?2)",
+            params![name, pos],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn rename_board(&self, id: i64, name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE boards SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_board(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM boards WHERE id = ?1", [id])?;
+        self.reclaim()
+    }
+
+    pub fn add_clip(&self, board_id: i64, name: &str, data: &[u8], pos: i64) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO clips (board_id, name, data, pos) VALUES (?1, ?2, ?3, ?4)",
+            params![board_id, name, data, pos],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn update_clip(&self, id: i64, name: &str, data: &[u8]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE clips SET name = ?2, data = ?3 WHERE id = ?1",
+            params![id, name, data],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_clip(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM clips WHERE id = ?1", [id])?;
+        self.reclaim()
+    }
+
+    /// Devuelve al sistema las páginas que quedaron libres tras borrar.
+    fn reclaim(&self) -> Result<()> {
+        self.conn.execute_batch("PRAGMA incremental_vacuum;")
+    }
+}

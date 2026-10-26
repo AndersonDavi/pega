@@ -1,0 +1,60 @@
+# Pega
+
+Gestor de portapapeles para Windows, nativo y liviano. Escrito en Rust.
+
+Nace como reemplazo de PasteBar (Tauri + WebView2): la misma idea de historial y tableros,
+pero en un solo proceso sin navegador embebido.
+
+| | PasteBar 0.6.2 | Pega |
+|---|---|---|
+| RAM privada en reposo | ~340 MB (7 procesos) | ~11 MB (1 proceso) |
+| Ejecutable | 53 MB | ~6 MB |
+| Datos en disco | SQLite en texto plano | SQLite cifrado con DPAPI |
+
+## Qué hace
+
+- **Historial** de texto e imágenes (capturas, "copiar imagen"), con miniaturas.
+  Guarda hasta 1000 textos y 100 imágenes sin fijar; lo fijado no se borra.
+- **Tableros** con clips de texto fijo (datos, plantillas, respuestas).
+- **Búsqueda** sin importar mayúsculas ni tildes, en historial y tableros.
+- **Atajo global** `Ctrl+Alt+V` para abrir/ocultar.
+- **Clic** copia; **doble clic** o **Enter** pega en la ventana anterior; `Shift+Enter` solo copia.
+- Las capturas repetidas (ShareX y similares avisan varias veces) no se duplican: se comparan por hash de píxeles.
+
+## Privacidad
+
+- Todo el contenido se guarda cifrado con [DPAPI](https://learn.microsoft.com/windows/win32/api/dpapi/),
+  atado a tu usuario de Windows: otro usuario, o la base copiada a otro PC, no la puede leer.
+  No protege contra programas que corren con tu mismo usuario.
+- Respeta las marcas estándar de Windows (`ExcludeClipboardContentFromMonitorProcessing`,
+  `CanIncludeInClipboardHistory`): lo que copian los gestores de contraseñas no se guarda.
+- Al copiar un clip de tablero se marca igual, para que no quede en el historial de Windows (Win+V)
+  ni se suba a la nube.
+- Los datos viven en `%APPDATA%\Pega\pega.db`.
+
+## Compilar
+
+Requisitos: [Rust](https://rustup.rs) y Visual Studio (o Build Tools) con "Desarrollo para el escritorio con C++".
+
+```bat
+build.cmd --release
+```
+
+El ejecutable queda en `%TEMP%\pega-target\release\pega.exe` (se puede cambiar con `CARGO_TARGET_DIR`).
+
+`pega.exe --hidden` arranca sin mostrar la ventana.
+
+## Cómo está hecho
+
+- `src/win.rs`: Win32 directo. Escucha el portapapeles por eventos (`AddClipboardFormatListener`, sin sondeo),
+  registra el atajo, lee y escribe texto e imágenes, y simula `Ctrl+V`.
+- `src/state.rs` / `src/store.rs`: estado en memoria y SQLite (WAL, `auto_vacuum` incremental).
+- `src/crypto.rs`: DPAPI.
+- `src/image.rs`: DIB ⇄ RGBA ⇄ PNG, miniaturas y hash.
+- `src/app.rs`: interfaz con [egui](https://github.com/emilk/egui), dibujada por CPU con
+  [egui_software_backend](https://github.com/DGriffin91/egui_software_backend). Con OpenGL o Direct3D
+  el driver de la tarjeta de video se carga dentro del proceso y la RAM sube a 120–350 MB.
+
+## Licencia
+
+MIT. Ver [LICENSE](LICENSE).
