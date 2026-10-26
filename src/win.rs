@@ -66,6 +66,8 @@ const WM_TRAY: u32 = WM_APP + 2;
 const WM_REHOTKEY: u32 = WM_APP + 3;
 /// Cambió algo que afecta a lo temporal (ajustes, fijar, borrar): reprogramar el temporizador.
 const WM_RESCHEDULE: u32 = WM_APP + 4;
+/// `pega-cli` cambió la base: volver a leerla.
+const WM_RELOAD: u32 = WM_APP + 5;
 /// Temporizador de las entradas que se borran solas.
 const TIMER_EXPIRE: usize = 1;
 const CLASS: &str = "PegaListener";
@@ -173,10 +175,19 @@ pub fn app_hwnd() -> isize {
 
 /// Le pide a la instancia que ya corre que se muestre.
 pub fn signal_existing() {
+    post_to_running(WM_SHOW);
+}
+
+/// `pega-cli` cambió la base: si la app está abierta, que la vuelva a leer.
+pub fn notify_reload() {
+    post_to_running(WM_RELOAD);
+}
+
+fn post_to_running(msg: u32) {
     unsafe {
         let hwnd = FindWindowW(wide(CLASS).as_ptr(), ptr::null());
         if !hwnd.is_null() {
-            PostMessageW(hwnd, WM_SHOW, 0, 0);
+            PostMessageW(hwnd, msg, 0, 0);
         }
     }
 }
@@ -280,6 +291,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_RESCHEDULE => {
             unsafe { schedule_expiry(hwnd) };
+            0
+        }
+        WM_RELOAD => {
+            shared.state.lock().unwrap().reload();
+            unsafe { schedule_expiry(hwnd) };
+            shared.ctx.request_repaint();
             0
         }
         WM_HOTKEY if wparam as i32 == HOTKEY_ID => {

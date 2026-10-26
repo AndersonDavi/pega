@@ -150,8 +150,64 @@ pub fn fold(s: &str) -> String {
         .collect()
 }
 
+/// Lo que se lee de la base al cargar (y al recargar tras un cambio de `pega-cli`).
+struct Loaded {
+    history: Vec<Entry>,
+    boards: Vec<Board>,
+    clips: Vec<Clip>,
+    apps: Vec<(i64, String)>,
+    settings: Settings,
+    plain_boards: Vec<i64>,
+    plain_clips: Vec<i64>,
+}
+
 impl State {
     pub fn load(store: Store) -> rusqlite::Result<Self> {
+        let Loaded {
+            history,
+            boards,
+            clips,
+            apps,
+            settings,
+            plain_boards,
+            plain_clips,
+        } = Self::read(&store)?;
+        crate::i18n::apply(settings.language);
+        let state = Self {
+            store,
+            history,
+            boards,
+            clips,
+            apps,
+            settings,
+            hotkey_ok: false,
+            plain_hotkey_ok: true,
+            error: None,
+            notice: None,
+        };
+        state.encrypt_legacy_names(&plain_boards, &plain_clips)?;
+        let mut state = state;
+        state.refresh_sensitive();
+        state.purge_old();
+        state.purge_expired();
+        Ok(state)
+    }
+
+    /// Vuelve a leer historial y tableros de la base: `pega-cli` la cambió.
+    /// Los ajustes no: solo los cambia la ventana.
+    pub fn reload(&mut self) {
+        let r = Self::read(&self.store);
+        let Some(fresh) = self.report(r) else {
+            return;
+        };
+        self.history = fresh.history;
+        self.boards = fresh.boards;
+        self.clips = fresh.clips;
+        self.apps = fresh.apps;
+        self.refresh_sensitive();
+    }
+
+    fn read(store: &Store) -> rusqlite::Result<Loaded> {
         let history = store
             .load_history()?
             .into_iter()
@@ -245,25 +301,15 @@ impl State {
             .and_then(|b| crypto::unprotect_str(&b))
             .map(|t| Settings::decode(&t))
             .unwrap_or_default();
-        crate::i18n::apply(settings.language);
-        let state = Self {
-            store,
+        Ok(Loaded {
             history,
             boards,
             clips,
             apps,
             settings,
-            hotkey_ok: false,
-            plain_hotkey_ok: true,
-            error: None,
-            notice: None,
-        };
-        state.encrypt_legacy_names(&plain_boards, &plain_clips)?;
-        let mut state = state;
-        state.refresh_sensitive();
-        state.purge_old();
-        state.purge_expired();
-        Ok(state)
+            plain_boards,
+            plain_clips,
+        })
     }
 
     fn encrypt_legacy_names(&self, boards: &[i64], clips: &[i64]) -> rusqlite::Result<()> {

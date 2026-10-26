@@ -95,11 +95,19 @@ Publicar versiones: ver [DISTRIBUCION.md](DISTRIBUCION.md).
 ## Desde la terminal
 
 ```bat
-pega-cli list 5           :: últimas 5 copias
-pega-cli search lang:json :: busca (acepta app:, lang:, tipo:, fijado, hace:2h)
-pega-cli copy 3           :: copia la entrada 3
-pega-cli clip Cedula      :: copia un clip de tablero
+pega-cli list 5                         :: últimas 5 copias
+pega-cli search lang:json               :: busca (acepta app:, lang:, tipo:, fijado, hace:2h)
+pega-cli show 2                         :: muestra completa la entrada 2
+pega-cli copy 3                         :: copia la entrada 3
+pega-cli clip Cedula                    :: copia un clip de tablero
+pega-cli add "texto"                    :: guarda un texto (o: dir | pega-cli add)
+pega-cli pin 1                          :: fija o suelta una entrada
+pega-cli delete 4                       :: borra una entrada
+pega-cli new-clip "Datos/Teléfono" 300  :: crea o reemplaza un clip
+pega-cli delete-clip Teléfono           :: borra un clip
 ```
+
+Si la ventana está abierta, se actualiza sola con lo que cambie `pega-cli`.
 
 ## Cómo está hecho
 
