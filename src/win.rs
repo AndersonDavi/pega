@@ -24,10 +24,11 @@ use windows_sys::Win32::System::Memory::{
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL,
-    MOD_NOREPEAT, RegisterHotKey, SendInput, VK_CONTROL,
+    MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey, SendInput, UnregisterHotKey, VK_CONTROL,
 };
 use windows_sys::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
@@ -40,7 +41,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
-pub const HOTKEY_LABEL: &str = "Ctrl+Alt+V";
 pub const WINDOW_TITLE: &str = "Pega";
 const VK_V: u16 = 0x56;
 const CF_UNICODETEXT: u32 = 13;
@@ -50,6 +50,8 @@ const HOTKEY_ID: i32 = 1;
 const WM_SHOW: u32 = WM_APP + 1;
 /// Clics sobre el ícono de la bandeja.
 const WM_TRAY: u32 = WM_APP + 2;
+/// Los ajustes cambiaron el atajo.
+const WM_REHOTKEY: u32 = WM_APP + 3;
 const CLASS: &str = "PegaListener";
 const TRAY_ID: u32 = 1;
 const MENU_OPEN: usize = 1;
@@ -166,16 +168,7 @@ unsafe fn run() {
         );
         add_tray(hwnd);
         AddClipboardFormatListener(hwnd);
-        let hotkey_ok = RegisterHotKey(
-            hwnd,
-            HOTKEY_ID,
-            MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-            VK_V as u32,
-        ) != 0;
-        if let Some(s) = SHARED.get() {
-            s.state.lock().unwrap().hotkey_ok = hotkey_ok;
-            s.ctx.request_repaint();
-        }
+        apply_hotkey(hwnd);
         let mut msg: MSG = mem::zeroed();
         while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);
@@ -208,6 +201,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             unsafe { show(&shared.ctx) };
             0
         }
+        WM_REHOTKEY => {
+            unsafe { apply_hotkey(hwnd) };
+            0
+        }
         WM_TRAY => {
             match lparam as u32 {
                 WM_LBUTTONUP => unsafe { show(&shared.ctx) },
@@ -223,6 +220,56 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
+}
+
+fn hotkey_label() -> String {
+    SHARED
+        .get()
+        .map(|s| s.state.lock().unwrap().settings.hotkey.label())
+        .unwrap_or_default()
+}
+
+/// (Re)registra el atajo de los ajustes y actualiza el texto de la bandeja.
+unsafe fn apply_hotkey(hwnd: HWND) {
+    let Some(shared) = SHARED.get() else { return };
+    let hk = shared.state.lock().unwrap().settings.hotkey;
+    let mut mods = MOD_NOREPEAT;
+    for (on, m) in [
+        (hk.ctrl, MOD_CONTROL),
+        (hk.alt, MOD_ALT),
+        (hk.shift, MOD_SHIFT),
+        (hk.win, MOD_WIN),
+    ] {
+        if on {
+            mods |= m;
+        }
+    }
+    let ok = unsafe {
+        UnregisterHotKey(hwnd, HOTKEY_ID);
+        RegisterHotKey(hwnd, HOTKEY_ID, mods, hk.vk as u32) != 0
+    };
+    shared.state.lock().unwrap().hotkey_ok = ok;
+    if TRAY_OK.load(Relaxed) {
+        let mut nid = tray_data(hwnd);
+        nid.uFlags = NIF_TIP;
+        set_tip(&mut nid, &hk.label());
+        unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
+    }
+    shared.ctx.request_repaint();
+}
+
+/// La interfaz cambió el atajo en los ajustes.
+pub fn reload_hotkey() {
+    unsafe { PostMessageW(LISTENER_HWND.load(Relaxed) as HWND, WM_REHOTKEY, 0, 0) };
+}
+
+fn set_tip(nid: &mut NOTIFYICONDATAW, hotkey: &str) {
+    let tip: Vec<u16> = format!("Pega — {hotkey}")
+        .encode_utf16()
+        .take(nid.szTip.len() - 1)
+        .collect();
+    nid.szTip = [0; 128];
+    nid.szTip[..tip.len()].copy_from_slice(&tip);
 }
 
 fn tray_data(hwnd: HWND) -> NOTIFYICONDATAW {
@@ -247,8 +294,7 @@ unsafe fn add_tray(hwnd: HWND) {
             GetSystemMetrics(SM_CYSMICON),
             LR_DEFAULTCOLOR,
         );
-        let tip: Vec<u16> = format!("Pega — {HOTKEY_LABEL}").encode_utf16().collect();
-        nid.szTip[..tip.len()].copy_from_slice(&tip);
+        set_tip(&mut nid, &hotkey_label());
         TRAY_OK.store(Shell_NotifyIconW(NIM_ADD, &nid) != 0, Relaxed);
     }
 }
@@ -261,7 +307,7 @@ unsafe fn tray_menu(hwnd: HWND, ctx: &egui::Context) {
         } else {
             0
         };
-        let open = wide(&format!("Abrir Pega\t{HOTKEY_LABEL}"));
+        let open = wide(&format!("Abrir Pega\t{}", hotkey_label()));
         AppendMenuW(menu, MF_STRING, MENU_OPEN, open.as_ptr());
         AppendMenuW(
             menu,

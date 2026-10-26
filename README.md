@@ -14,16 +14,19 @@ pero en un solo proceso sin navegador embebido.
 ## Qué hace
 
 - **Historial** de texto e imágenes (capturas, "copiar imagen"), con miniaturas.
-  Guarda hasta 1000 textos y 100 imágenes sin fijar; lo fijado no se borra.
+  Por defecto guarda 1000 textos y 100 imágenes sin fijar; lo fijado no se borra.
 - **Tableros** con clips de texto fijo (datos, plantillas, respuestas).
 - **Búsqueda** sin importar mayúsculas ni tildes, en historial y tableros.
-- **Atajo global** `Ctrl+Alt+V` para abrir/ocultar.
+- **Atajo global** para abrir/ocultar (`Ctrl+Alt+V` por defecto, configurable).
+- **Bandeja del sistema** e **inicio con Windows** (arranca oculto).
+- **Importa** tableros y clips de PasteBar (los anidados quedan como `Padre / Hijo`).
+- **Ajustes**: atajo, tema claro/oscuro/sistema y límites del historial (o sin límite).
 - **Clic** copia; **doble clic** o **Enter** pega en la ventana anterior; `Shift+Enter` solo copia.
 - Las capturas repetidas (ShareX y similares avisan varias veces) no se duplican: se comparan por hash de píxeles.
 
 ## Privacidad
 
-- Todo el contenido se guarda cifrado con [DPAPI](https://learn.microsoft.com/windows/win32/api/dpapi/),
+- Todo el contenido (y los nombres de tableros, clips y los ajustes) se guarda cifrado con [DPAPI](https://learn.microsoft.com/windows/win32/api/dpapi/),
   atado a tu usuario de Windows: otro usuario, o la base copiada a otro PC, no la puede leer.
   No protege contra programas que corren con tu mismo usuario.
 - Respeta las marcas estándar de Windows (`ExcludeClipboardContentFromMonitorProcessing`,

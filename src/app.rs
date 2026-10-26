@@ -4,6 +4,8 @@
 //! Clic = copiar (la ventana sigue abierta). Doble clic o Enter = pegar en la app anterior.
 
 use crate::image;
+use crate::settings::{Settings, Theme};
+use crate::settings_ui::{Outcome, SettingsWindow};
 use crate::state::{self, State};
 use crate::win;
 use egui::{Key, Modifiers, RichText, TextWrapMode, ViewportCommand};
@@ -44,6 +46,7 @@ enum Action {
     },
     DeleteClip(i64),
     ImportPasteBar,
+    SaveSettings(Settings),
     Hide,
     Quit,
 }
@@ -69,6 +72,9 @@ pub struct PegaApp {
     thumbs: HashMap<i64, egui::TextureHandle>,
     /// Aviso corto ("Copiado") y hasta cuándo se muestra.
     flash: Option<(String, f64)>,
+    settings_window: Option<SettingsWindow>,
+    /// Tema aplicado a egui; se reaplica solo si cambia en los ajustes.
+    applied_theme: Option<Theme>,
 }
 
 impl PegaApp {
@@ -85,6 +91,8 @@ impl PegaApp {
             quitting: false,
             thumbs: HashMap::new(),
             flash: None,
+            settings_window: None,
+            applied_theme: None,
         }
     }
 
@@ -153,6 +161,17 @@ impl egui_software_backend::App for PegaApp {
             actions.push(Action::Hide);
         }
 
+        if self.applied_theme != Some(st.settings.theme) {
+            ctx.set_theme(match st.settings.theme {
+                Theme::System => egui::ThemePreference::System,
+                Theme::Dark => egui::ThemePreference::Dark,
+                Theme::Light => egui::ThemePreference::Light,
+            });
+            self.applied_theme = Some(st.settings.theme);
+        }
+        let hotkey = st.settings.hotkey.label();
+        let modal_open = self.editor.is_some() || self.settings_window.is_some();
+
         let just_shown = win::take_shown();
         if just_shown {
             self.query.clear();
@@ -181,7 +200,7 @@ impl egui_software_backend::App for PegaApp {
         }
 
         // Teclado: flechas para moverse, Enter pega, Shift+Enter copia, Esc limpia/oculta.
-        if self.editor.is_none() {
+        if !modal_open {
             let (down, up, enter, shift_enter, esc) = ctx.input_mut(|i| {
                 (
                     i.consume_key(Modifiers::NONE, Key::ArrowDown),
@@ -228,6 +247,9 @@ impl egui_software_backend::App for PegaApp {
                     if ui.button("Importar de PasteBar").clicked() {
                         actions.push(Action::ImportPasteBar);
                     }
+                    if ui.button("Ajustes…").clicked() {
+                        self.settings_window = Some(SettingsWindow::new(&st.settings));
+                    }
                     ui.separator();
                     if ui
                         .button("Salir")
@@ -244,16 +266,13 @@ impl egui_software_backend::App for PegaApp {
                     }
                     _ => self.flash = None,
                 }
-                let hint = format!(
-                    "Buscar en historial y tableros…   ({} abre/oculta)",
-                    win::HOTKEY_LABEL
-                );
+                let hint = format!("Buscar en historial y tableros…   ({hotkey} abre/oculta)");
                 let search = ui.add(
                     egui::TextEdit::singleline(&mut self.query)
                         .hint_text(hint)
                         .desired_width(f32::INFINITY),
                 );
-                if just_shown || ctx.memory(|m| m.focused().is_none()) && self.editor.is_none() {
+                if just_shown || ctx.memory(|m| m.focused().is_none()) && !modal_open {
                     search.request_focus();
                 }
                 if search.changed() {
@@ -264,10 +283,7 @@ impl egui_software_backend::App for PegaApp {
             if !st.hotkey_ok {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    format!(
-                        "No se pudo registrar {} (¿PasteBar u otra app lo usa?).",
-                        win::HOTKEY_LABEL
-                    ),
+                    format!("No se pudo registrar {hotkey}: otra app lo usa. Cámbialo en Ajustes."),
                 );
             }
             if let Some(err) = &st.error {
@@ -565,6 +581,17 @@ impl egui_software_backend::App for PegaApp {
             }
         }
 
+        if let Some(win) = &mut self.settings_window {
+            match win.show(&ctx) {
+                Outcome::Open => {}
+                Outcome::Save(s) => {
+                    actions.push(Action::SaveSettings(s));
+                    self.settings_window = None;
+                }
+                Outcome::Cancel => self.settings_window = None,
+            }
+        }
+
         drop(hist);
         drop(st);
         self.apply(&ctx, actions);
@@ -650,6 +677,11 @@ impl PegaApp {
                             text,
                         } => st.save_clip(id, board_id, &name, &text),
                         Action::DeleteClip(id) => st.delete_clip(id),
+                        Action::SaveSettings(s) => {
+                            if st.save_settings(s) {
+                                win::reload_hotkey();
+                            }
+                        }
                         Action::Copy { .. }
                         | Action::ImportPasteBar
                         | Action::Hide

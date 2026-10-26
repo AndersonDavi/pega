@@ -3,13 +3,10 @@
 
 use crate::crypto;
 use crate::image::{self, Rgba};
-use crate::store::{KIND_IMAGE, Store};
+use crate::settings::Settings;
+use crate::store::{KIND_IMAGE, Name, Store};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Copias sin fijar que se conservan; las más viejas se borran.
-pub const MAX_HISTORY: usize = 1000;
-/// De esas, cuántas pueden ser imágenes (pesan mucho más que el texto).
-pub const MAX_IMAGES: usize = 100;
 /// Textos más grandes se ignoran (logs enormes, archivos pegados por error).
 pub const MAX_TEXT_BYTES: usize = 256 * 1024;
 
@@ -79,9 +76,12 @@ pub struct State {
     pub history: Vec<Entry>,
     pub boards: Vec<Board>,
     pub clips: Vec<Clip>,
+    pub settings: Settings,
     pub hotkey_ok: bool,
     pub error: Option<String>,
 }
+
+const SETTINGS_KEY: &str = "settings";
 
 pub fn now() -> i64 {
     SystemTime::now()
@@ -145,34 +145,93 @@ impl State {
                 })
             })
             .collect();
+        // Nombres en claro de versiones anteriores: se cifran al cargarlos.
+        let mut plain_boards = Vec::new();
         let boards = store
             .load_boards()?
             .into_iter()
-            .map(|(id, name)| Board { id, name })
+            .filter_map(|(id, name)| {
+                let name = match name {
+                    Name::Encrypted(b) => crypto::unprotect_str(&b)?,
+                    Name::Plain(s) => {
+                        plain_boards.push(id);
+                        s
+                    }
+                };
+                Some(Board { id, name })
+            })
             .collect();
+        let mut plain_clips = Vec::new();
         let clips = store
             .load_clips()?
             .into_iter()
             .filter_map(|r| {
+                let name = match r.name {
+                    Name::Encrypted(b) => crypto::unprotect_str(&b)?,
+                    Name::Plain(s) => {
+                        plain_clips.push(r.id);
+                        s
+                    }
+                };
                 let text = crypto::unprotect_str(&r.data)?;
-                let key = fold(&format!("{} {}", r.name, text));
+                let key = fold(&format!("{name} {text}"));
                 Some(Clip {
                     id: r.id,
                     board_id: r.board_id,
-                    name: r.name,
+                    name,
                     text,
                     key,
                 })
             })
             .collect();
-        Ok(Self {
+        let settings = store
+            .get_meta(SETTINGS_KEY)?
+            .and_then(|b| crypto::unprotect_str(&b))
+            .map(|t| Settings::decode(&t))
+            .unwrap_or_default();
+        let state = Self {
             store,
             history,
             boards,
             clips,
+            settings,
             hotkey_ok: false,
             error: None,
-        })
+        };
+        state.encrypt_legacy_names(&plain_boards, &plain_clips)?;
+        Ok(state)
+    }
+
+    fn encrypt_legacy_names(&self, boards: &[i64], clips: &[i64]) -> rusqlite::Result<()> {
+        for b in self.boards.iter().filter(|b| boards.contains(&b.id)) {
+            if let Some(enc) = crypto::protect_str(&b.name) {
+                self.store.rename_board(b.id, &enc)?;
+            }
+        }
+        for c in self.clips.iter().filter(|c| clips.contains(&c.id)) {
+            if let Some(enc) = crypto::protect_str(&c.name) {
+                self.store.set_clip_name(c.id, &enc)?;
+            }
+        }
+        if !boards.is_empty() || !clips.is_empty() {
+            self.store.checkpoint()?;
+        }
+        Ok(())
+    }
+
+    /// Guarda ajustes nuevos y aplica los límites. Devuelve si cambió el atajo.
+    pub fn save_settings(&mut self, new: Settings) -> bool {
+        let hotkey_changed = new.hotkey != self.settings.hotkey;
+        match crypto::protect_str(&new.encode()) {
+            Some(enc) => {
+                let r = self.store.set_meta(SETTINGS_KEY, &enc);
+                self.report(r);
+            }
+            None => self.error = Some("DPAPI no pudo cifrar los ajustes".into()),
+        }
+        self.settings = new;
+        self.trim();
+        hotkey_changed
     }
 
     fn report<T>(&mut self, r: rusqlite::Result<T>) -> Option<T> {
@@ -280,6 +339,12 @@ impl State {
     }
 
     fn trim(&mut self) {
+        // 0 = sin límite.
+        let limit = |n: usize| if n == 0 { usize::MAX } else { n };
+        let (max_texts, max_images) = (
+            limit(self.settings.max_texts),
+            limit(self.settings.max_images),
+        );
         let mut texts = 0;
         let mut images = 0;
         let mut drop = Vec::new();
@@ -287,10 +352,10 @@ impl State {
         for e in self.history.iter().filter(|e| !e.pinned) {
             let over = if e.image.is_some() {
                 images += 1;
-                images > MAX_IMAGES
+                images > max_images
             } else {
                 texts += 1;
-                texts > MAX_HISTORY
+                texts > max_texts
             };
             if over {
                 drop.push(e.id);
@@ -332,7 +397,8 @@ impl State {
     }
 
     pub fn add_board(&mut self, name: &str) -> Option<i64> {
-        let r = self.store.add_board(name, self.boards.len() as i64);
+        let enc = crypto::protect_str(name)?;
+        let r = self.store.add_board(&enc, self.boards.len() as i64);
         let id = self.report(r)?;
         self.boards.push(Board {
             id,
@@ -342,7 +408,10 @@ impl State {
     }
 
     pub fn rename_board(&mut self, id: i64, name: &str) {
-        let r = self.store.rename_board(id, name);
+        let Some(enc) = crypto::protect_str(name) else {
+            return;
+        };
+        let r = self.store.rename_board(id, &enc);
         self.report(r);
         if let Some(b) = self.boards.iter_mut().find(|b| b.id == id) {
             b.name = name.to_owned();
@@ -358,14 +427,15 @@ impl State {
 
     /// Crea (id = None) o edita un clip de tablero.
     pub fn save_clip(&mut self, id: Option<i64>, board_id: i64, name: &str, text: &str) {
-        let Some(data) = crypto::protect_str(text) else {
+        let (Some(data), Some(enc_name)) = (crypto::protect_str(text), crypto::protect_str(name))
+        else {
             self.error = Some("DPAPI no pudo cifrar el clip".into());
             return;
         };
         let key = fold(&format!("{name} {text}"));
         match id {
             Some(id) => {
-                let r = self.store.update_clip(id, name, &data);
+                let r = self.store.update_clip(id, &enc_name, &data);
                 self.report(r);
                 if let Some(c) = self.clips.iter_mut().find(|c| c.id == id) {
                     c.name = name.to_owned();
@@ -375,7 +445,7 @@ impl State {
             }
             None => {
                 let pos = self.clips.iter().filter(|c| c.board_id == board_id).count() as i64;
-                let r = self.store.add_clip(board_id, name, &data, pos);
+                let r = self.store.add_clip(board_id, &enc_name, &data, pos);
                 if let Some(id) = self.report(r) {
                     self.clips.push(Clip {
                         id,

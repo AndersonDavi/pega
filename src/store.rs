@@ -1,6 +1,7 @@
 //! SQLite en disco. Solo ve bytes: el cifrado ocurre antes, en `state`.
 
-use rusqlite::{Connection, Result, params};
+use rusqlite::types::ValueRef;
+use rusqlite::{Connection, OptionalExtension, Result, params};
 use std::path::Path;
 
 pub struct Store {
@@ -25,8 +26,23 @@ pub struct HistoryRow {
 pub struct ClipRow {
     pub id: i64,
     pub board_id: i64,
-    pub name: String,
+    pub name: Name,
     pub data: Vec<u8>,
+}
+
+/// Nombre de tablero o clip: cifrado, o en claro si viene de una versión anterior.
+pub enum Name {
+    Plain(String),
+    Encrypted(Vec<u8>),
+}
+
+fn name_at(r: &rusqlite::Row, i: usize) -> Result<Name> {
+    Ok(match r.get_ref(i)? {
+        ValueRef::Blob(b) => Name::Encrypted(b.to_vec()),
+        other => {
+            Name::Plain(String::from_utf8_lossy(other.as_bytes().unwrap_or_default()).into_owned())
+        }
+    })
 }
 
 impl Store {
@@ -59,6 +75,10 @@ impl Store {
                  name     TEXT    NOT NULL,
                  data     BLOB    NOT NULL,
                  pos      INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS meta (
+                 key   TEXT PRIMARY KEY,
+                 value BLOB NOT NULL
              );",
         )?;
         // Columnas de imágenes, agregadas después de la primera versión.
@@ -158,11 +178,26 @@ impl Store {
         self.reclaim()
     }
 
-    pub fn load_boards(&self) -> Result<Vec<(i64, String)>> {
+    pub fn get_meta(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .optional()
+    }
+
+    pub fn set_meta(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_boards(&self) -> Result<Vec<(i64, Name)>> {
         let mut st = self
             .conn
             .prepare("SELECT id, name FROM boards ORDER BY pos, id")?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, name_at(r, 1)?)))?;
         rows.collect()
     }
 
@@ -174,14 +209,14 @@ impl Store {
             Ok(ClipRow {
                 id: r.get(0)?,
                 board_id: r.get(1)?,
-                name: r.get(2)?,
+                name: name_at(r, 2)?,
                 data: r.get(3)?,
             })
         })?;
         rows.collect()
     }
 
-    pub fn add_board(&self, name: &str, pos: i64) -> Result<i64> {
+    pub fn add_board(&self, name: &[u8], pos: i64) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO boards (name, pos) VALUES (?1, ?2)",
             params![name, pos],
@@ -189,7 +224,7 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
-    pub fn rename_board(&self, id: i64, name: &str) -> Result<()> {
+    pub fn rename_board(&self, id: i64, name: &[u8]) -> Result<()> {
         self.conn.execute(
             "UPDATE boards SET name = ?2 WHERE id = ?1",
             params![id, name],
@@ -203,7 +238,7 @@ impl Store {
         self.reclaim()
     }
 
-    pub fn add_clip(&self, board_id: i64, name: &str, data: &[u8], pos: i64) -> Result<i64> {
+    pub fn add_clip(&self, board_id: i64, name: &[u8], data: &[u8], pos: i64) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO clips (board_id, name, data, pos) VALUES (?1, ?2, ?3, ?4)",
             params![board_id, name, data, pos],
@@ -211,7 +246,7 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
-    pub fn update_clip(&self, id: i64, name: &str, data: &[u8]) -> Result<()> {
+    pub fn update_clip(&self, id: i64, name: &[u8], data: &[u8]) -> Result<()> {
         self.conn.execute(
             "UPDATE clips SET name = ?2, data = ?3 WHERE id = ?1",
             params![id, name, data],
@@ -219,9 +254,23 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_clip_name(&self, id: i64, name: &[u8]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE clips SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_clip(&self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM clips WHERE id = ?1", [id])?;
         self.reclaim()
+    }
+
+    /// Vuelca el WAL al archivo principal y lo vacía: tras cifrar datos que estaban en claro,
+    /// las copias viejas de esas páginas no quedan en el WAL.
+    pub fn checkpoint(&self) -> Result<()> {
+        self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
     }
 
     /// Devuelve al sistema las páginas que quedaron libres tras borrar.
