@@ -165,6 +165,8 @@ pub struct Settings {
     pub expire_minutes: u32,
     /// Apps cuyas copias se guardan, pero se borran solas a los expire_minutes.
     pub sensitive_apps: Vec<String>,
+    /// Leer el texto de las capturas con el OCR de Windows (en un proceso aparte).
+    pub ocr: bool,
 }
 
 impl Default for Settings {
@@ -190,6 +192,7 @@ impl Default for Settings {
             language: UiLang::System,
             expire_minutes: 5,
             sensitive_apps: Vec::new(),
+            ocr: false,
         }
     }
 }
@@ -218,6 +221,7 @@ impl Settings {
             format!("pin={}", self.pin),
             format!("lock_minutes={}", self.lock_minutes),
             format!("expire_minutes={}", self.expire_minutes),
+            format!("ocr={}", self.ocr as u8),
             format!("sensitive_apps={}", encode_list(&self.sensitive_apps)),
             format!(
                 "language={}",
@@ -269,6 +273,7 @@ impl Settings {
                 "pin" => s.pin = value.chars().filter(char::is_ascii_digit).collect(),
                 "lock_minutes" => s.lock_minutes = value.parse().unwrap_or(s.lock_minutes),
                 "expire_minutes" => s.expire_minutes = value.parse().unwrap_or(s.expire_minutes),
+                "ocr" => s.ocr = value == "1",
                 "sensitive_apps" => s.sensitive_apps = decode_list(value),
                 "language" => {
                     s.language = match value {
@@ -337,6 +342,7 @@ mod tests {
             language: UiLang::English,
             expire_minutes: 3,
             sensitive_apps: vec!["banco.exe".into()],
+            ocr: true,
         };
         assert!(Settings::decode(&s.encode()) == s);
     }

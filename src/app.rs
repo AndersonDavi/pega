@@ -337,6 +337,15 @@ fn tooltip(text: &str, app: Option<&str>, used_at: i64) -> String {
     t
 }
 
+/// Texto recortado a 600 caracteres para un tooltip.
+fn tooltip_text(text: &str) -> String {
+    let mut t: String = text.chars().take(600).collect();
+    if text.chars().count() > 600 {
+        t.push('…');
+    }
+    t
+}
+
 /// "hace 5 min", a partir de milisegundos Unix.
 fn ago(ms: i64) -> String {
     let s = ((state::now() - ms) / 1000).max(0);
@@ -745,6 +754,13 @@ impl egui_software_backend::App for PegaApp {
                                             ui.label(tooltip(&text, app, e.used_at));
                                         }
                                     }
+                                    if let Some(read) =
+                                        e.image.as_ref().and_then(|i| i.ocr.as_deref())
+                                    {
+                                        ui.separator();
+                                        ui.weak(t("Texto en la imagen:", "Text in the image:"));
+                                        ui.label(tooltip_text(&masked(read)));
+                                    }
                                     if let Some(at) = expires {
                                         let mins = ((at - now) / 60_000).max(0) + 1;
                                         ui.colored_label(
@@ -785,6 +801,23 @@ impl egui_software_backend::App for PegaApp {
                                     });
                                 }
                                 resp.context_menu(|ui| {
+                                    if let Some(read) =
+                                        e.image.as_ref().and_then(|i| i.ocr.as_ref())
+                                    {
+                                        if ui
+                                            .button(t(
+                                                "Copiar texto de la imagen",
+                                                "Copy text from image",
+                                            ))
+                                            .clicked()
+                                        {
+                                            actions.push(Action::Copy {
+                                                item: Item::Text(read.clone()),
+                                                private: false,
+                                                paste: false,
+                                            });
+                                        }
+                                    }
                                     if e.image.is_none() {
                                         paste_as_menu(ui, &e.text, false, &mut actions);
                                         if e.text.len() <= qr::MAX_BYTES

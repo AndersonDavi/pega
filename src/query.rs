@@ -120,6 +120,7 @@ mod tests {
                 height: 1,
                 hash: 0,
                 thumb_png: vec![],
+                ocr: None,
             }),
             app: None,
             lang,

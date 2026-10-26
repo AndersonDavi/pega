@@ -13,6 +13,7 @@ pub mod image;
 pub mod import;
 pub mod lock;
 pub mod mask;
+pub mod ocr;
 pub mod paths;
 pub mod qr;
 pub mod query;

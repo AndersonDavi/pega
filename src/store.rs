@@ -22,6 +22,8 @@ pub struct HistoryRow {
     pub used_at: i64,
     pub pinned: bool,
     pub app_id: Option<i64>,
+    /// Texto reconocido en una imagen (cifrado), si se activó el OCR.
+    pub ocr: Option<Vec<u8>>,
 }
 
 pub struct ClipRow {
@@ -100,6 +102,7 @@ impl Store {
             ("width", "INTEGER NOT NULL DEFAULT 0"),
             ("height", "INTEGER NOT NULL DEFAULT 0"),
             ("app_id", "INTEGER"),
+            ("ocr", "BLOB"),
         ] {
             if !existing.iter().any(|c| c == col) {
                 conn.execute_batch(&format!("ALTER TABLE history ADD COLUMN {col} {decl};"))?;
@@ -118,7 +121,7 @@ impl Store {
 
     pub fn load_history(&self) -> Result<Vec<HistoryRow>> {
         let mut st = self.conn.prepare(
-            "SELECT id, kind, CASE WHEN kind = 0 THEN data END, thumb, hash, width, height, used_at, pinned, app_id
+            "SELECT id, kind, CASE WHEN kind = 0 THEN data END, thumb, hash, width, height, used_at, pinned, app_id, ocr
              FROM history ORDER BY used_at DESC",
         )?;
         let rows = st.query_map([], |r| {
@@ -133,6 +136,7 @@ impl Store {
                 used_at: r.get(7)?,
                 pinned: r.get(8)?,
                 app_id: r.get(9)?,
+                ocr: r.get(10)?,
             })
         })?;
         rows.collect()
@@ -188,6 +192,14 @@ impl Store {
         self.conn.execute(
             "UPDATE history SET used_at = ?2 WHERE id = ?1",
             params![id, used_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_ocr(&self, id: i64, text: &[u8]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE history SET ocr = ?2 WHERE id = ?1",
+            params![id, text],
         )?;
         Ok(())
     }

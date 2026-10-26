@@ -43,6 +43,8 @@ pub struct ImageInfo {
     pub hash: i64,
     /// Miniatura en PNG (unos KB); la imagen completa se lee de disco al pegarla.
     pub thumb_png: Vec<u8>,
+    /// Texto reconocido con OCR, si está activado.
+    pub ocr: Option<String>,
 }
 
 /// Imagen ya codificada y cifrada, lista para guardarse. Se arma sin el candado
@@ -153,10 +155,16 @@ impl State {
             .filter_map(|r| {
                 if r.kind == KIND_IMAGE {
                     let thumb_png = crypto::unprotect(r.thumb.as_deref()?)?;
+                    let ocr = r.ocr.as_deref().and_then(crypto::unprotect_str);
+                    let mut key = image_key(r.width, r.height);
+                    if let Some(text) = &ocr {
+                        key.push(' ');
+                        key.push_str(&fold(text));
+                    }
                     return Some(Entry {
                         id: r.id,
                         text: String::new(),
-                        key: image_key(r.width, r.height),
+                        key,
                         used_at: r.used_at,
                         pinned: r.pinned,
                         app: r.app_id,
@@ -166,6 +174,7 @@ impl State {
                             height: r.height,
                             hash: r.hash?,
                             thumb_png,
+                            ocr,
                         }),
                     });
                 }
@@ -505,6 +514,7 @@ impl State {
                     height: p.height,
                     hash: p.hash,
                     thumb_png: p.thumb_png,
+                    ocr: None,
                 }),
             },
         );
@@ -520,6 +530,21 @@ impl State {
         let png = crypto::unprotect(&self.report(r)?)?;
         let img = image::decode_png(&png)?;
         Some((img, png))
+    }
+
+    /// Guarda (cifrado) el texto que el OCR leyó en una imagen y lo suma a la búsqueda.
+    pub fn set_ocr(&mut self, id: i64, text: String) {
+        let Some(enc) = crypto::protect_str(&text) else {
+            return;
+        };
+        let r = self.store.set_ocr(id, &enc);
+        self.report(r);
+        if let Some(e) = self.history.iter_mut().find(|e| e.id == id) {
+            if let Some(img) = &mut e.image {
+                e.key = format!("{} {}", image_key(img.width, img.height), fold(&text));
+                img.ocr = Some(text);
+            }
+        }
     }
 
     /// PNG completo (descifrado) de una imagen del historial.
@@ -623,6 +648,7 @@ impl State {
             height,
             hash,
             thumb_png,
+            ocr: None,
         });
         self.history.insert(
             pos,

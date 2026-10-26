@@ -564,10 +564,30 @@ fn capture_image(state: &Mutex<State>, dib: &[u8], app: Option<String>) -> bool 
     if let Some(changed) = state.lock().unwrap().bump_image(hash) {
         return changed;
     }
-    match state::prepare_image(&img, hash, app) {
-        Some(prepared) => state.lock().unwrap().insert_image(prepared),
-        None => false,
+    let Some(prepared) = state::prepare_image(&img, hash, app) else {
+        return false;
+    };
+    let mut st = state.lock().unwrap();
+    if !st.insert_image(prepared) {
+        return false;
     }
+    // OCR (si está activado) en otro hilo y otro proceso: la captura ya quedó guardada.
+    let id = st
+        .history
+        .iter()
+        .find(|e| e.image.as_ref().is_some_and(|i| i.hash == hash))
+        .map(|e| e.id);
+    if let (true, Some(id)) = (st.settings.ocr, id) {
+        thread::spawn(move || {
+            if let Some(text) = crate::ocr::recognize(&img) {
+                if let Some(shared) = SHARED.get() {
+                    shared.state.lock().unwrap().set_ocr(id, text);
+                    shared.ctx.request_repaint();
+                }
+            }
+        });
+    }
+    true
 }
 
 unsafe fn read_clipboard(owner: HWND) -> Option<Captured> {

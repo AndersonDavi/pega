@@ -176,6 +176,16 @@ impl SettingsWindow {
                     );
                     ui.end_row();
 
+                    ui.label(t("Texto de las capturas", "Text in screenshots"));
+                    ui.checkbox(&mut self.draft.ocr, t("Leer con el OCR de Windows", "Read with Windows OCR"))
+                        .on_hover_text(t(
+                            "Para buscar por el texto que aparece en las imágenes. Corre en un proceso aparte \
+                             (pega-ocr.exe) que termina al responder: no suma memoria a Pega.",
+                            "To search by the text shown in images. Runs in a separate process (pega-ocr.exe) \
+                             that exits after answering: it adds no memory to Pega.",
+                        ));
+                    ui.end_row();
+
                     ui.label(t("Borrar solos tras", "Auto-delete after")).on_hover_text(t(
                         "Códigos de un solo uso (4 a 6 dígitos) y lo copiado desde las apps sensibles.",
                         "One-time codes (4 to 6 digits) and copies from sensitive apps.",

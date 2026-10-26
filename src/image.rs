@@ -54,10 +54,16 @@ pub fn decode_png(bytes: &[u8]) -> Option<Rgba> {
     })
 }
 
-/// Reduce promediando bloques (sin dientes de sierra) hasta caber en THUMB_W x THUMB_H.
+/// Miniatura del historial: cabe en THUMB_W x THUMB_H.
 pub fn thumbnail(img: &Rgba) -> Rgba {
-    let scale = (THUMB_W as f64 / img.width as f64)
-        .min(THUMB_H as f64 / img.height as f64)
+    fit(img, THUMB_W, THUMB_H)
+}
+
+/// Reduce promediando bloques (sin dientes de sierra) hasta caber en `max_w` x `max_h`.
+/// Si ya cabe, devuelve una copia del mismo tamaño.
+pub fn fit(img: &Rgba, max_w: u32, max_h: u32) -> Rgba {
+    let scale = (max_w as f64 / img.width as f64)
+        .min(max_h as f64 / img.height as f64)
         .min(1.0);
     let tw = ((img.width as f64 * scale).round() as u32).max(1);
     let th = ((img.height as f64 * scale).round() as u32).max(1);
