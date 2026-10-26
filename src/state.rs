@@ -77,6 +77,8 @@ fn image_key(w: u32, h: u32) -> String {
 pub struct Board {
     pub id: i64,
     pub name: String,
+    /// RGB (0xRRGGBB), o None sin color.
+    pub color: Option<u32>,
 }
 
 pub struct Clip {
@@ -179,7 +181,7 @@ impl State {
         let boards = store
             .load_boards()?
             .into_iter()
-            .filter_map(|(id, name)| {
+            .filter_map(|(id, name, color)| {
                 let name = match name {
                     Name::Encrypted(b) => crypto::unprotect_str(&b)?,
                     Name::Plain(s) => {
@@ -187,7 +189,7 @@ impl State {
                         s
                     }
                 };
-                Some(Board { id, name })
+                Some(Board { id, name, color })
             })
             .collect();
         let mut plain_clips = Vec::new();
@@ -506,8 +508,71 @@ impl State {
         self.boards.push(Board {
             id,
             name: name.to_owned(),
+            color: None,
         });
         Some(id)
+    }
+
+    pub fn set_board_color(&mut self, id: i64, color: Option<u32>) {
+        let r = self.store.set_board_color(id, color);
+        self.report(r);
+        if let Some(b) = self.boards.iter_mut().find(|b| b.id == id) {
+            b.color = color;
+        }
+    }
+
+    /// Pone el tablero id antes de efore (o al final si es None).
+    pub fn move_board(&mut self, id: i64, before: Option<i64>) {
+        if Some(id) == before {
+            return;
+        }
+        let Some(from) = self.boards.iter().position(|b| b.id == id) else {
+            return;
+        };
+        let board = self.boards.remove(from);
+        let to = before
+            .and_then(|b| self.boards.iter().position(|x| x.id == b))
+            .unwrap_or(self.boards.len());
+        self.boards.insert(to, board);
+        let order: Vec<(i64, i64)> = self
+            .boards
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.id, i as i64))
+            .collect();
+        let r = self.store.set_board_positions(&order);
+        self.report(r);
+    }
+
+    /// Mueve el clip id al tablero oard_id, antes de efore (o al final).
+    pub fn move_clip(&mut self, id: i64, board_id: i64, before: Option<i64>) {
+        if Some(id) == before {
+            return;
+        }
+        let Some(from) = self.clips.iter().position(|c| c.id == id) else {
+            return;
+        };
+        let mut clip = self.clips.remove(from);
+        clip.board_id = board_id;
+        // Posición en el vector: antes de efore, o después del último clip del tablero.
+        let to = match before.and_then(|b| self.clips.iter().position(|c| c.id == b)) {
+            Some(i) => i,
+            None => self
+                .clips
+                .iter()
+                .rposition(|c| c.board_id == board_id)
+                .map_or(self.clips.len(), |i| i + 1),
+        };
+        self.clips.insert(to, clip);
+        let order: Vec<(i64, i64, i64)> = self
+            .clips
+            .iter()
+            .filter(|c| c.board_id == board_id)
+            .enumerate()
+            .map(|(i, c)| (c.id, c.board_id, i as i64))
+            .collect();
+        let r = self.store.set_clip_positions(&order);
+        self.report(r);
     }
 
     pub fn rename_board(&mut self, id: i64, name: &str) {
@@ -626,6 +691,31 @@ mod tests {
         set.keep_days = 7;
         s.save_settings(set);
         assert!(s.history.is_empty());
+    }
+
+    #[test]
+    fn boards_and_clips_reorder() {
+        let mut s = state();
+        let a = s.add_board("A").unwrap();
+        let b = s.add_board("B").unwrap();
+        for n in ["1", "2", "3"] {
+            s.save_clip(None, a, n, n);
+        }
+        let id = |s: &State, n: &str| s.clips.iter().find(|c| c.name == n).unwrap().id;
+        let names = |s: &State, board: i64| -> Vec<String> {
+            s.clips
+                .iter()
+                .filter(|c| c.board_id == board)
+                .map(|c| c.name.clone())
+                .collect()
+        };
+        s.move_clip(id(&s, "3"), a, Some(id(&s, "1")));
+        assert_eq!(names(&s, a), ["3", "1", "2"]);
+        s.move_clip(id(&s, "1"), b, None);
+        assert_eq!(names(&s, a), ["3", "2"]);
+        assert_eq!(names(&s, b), ["1"]);
+        s.move_board(b, Some(a));
+        assert_eq!(s.boards[0].id, b);
     }
 
     #[test]

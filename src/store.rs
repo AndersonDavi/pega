@@ -104,6 +104,13 @@ impl Store {
             }
         }
         conn.execute_batch("CREATE INDEX IF NOT EXISTS history_hash ON history(hash);")?;
+        let board_cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('boards')")?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_>>()?;
+        if !board_cols.iter().any(|c| c == "color") {
+            conn.execute_batch("ALTER TABLE boards ADD COLUMN color INTEGER;")?;
+        }
         Ok(Self { conn })
     }
 
@@ -215,12 +222,41 @@ impl Store {
         Ok(())
     }
 
-    pub fn load_boards(&self) -> Result<Vec<(i64, Name)>> {
+    pub fn load_boards(&self) -> Result<Vec<(i64, Name, Option<u32>)>> {
         let mut st = self
             .conn
-            .prepare("SELECT id, name FROM boards ORDER BY pos, id")?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, name_at(r, 1)?)))?;
+            .prepare("SELECT id, name, color FROM boards ORDER BY pos, id")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, name_at(r, 1)?, r.get(2)?)))?;
         rows.collect()
+    }
+
+    pub fn set_board_color(&self, id: i64, color: Option<u32>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE boards SET color = ?2 WHERE id = ?1",
+            params![id, color],
+        )?;
+        Ok(())
+    }
+
+    /// Guarda el orden de los tableros: (id, posición).
+    pub fn set_board_positions(&self, order: &[(i64, i64)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (id, pos) in order {
+            tx.execute("UPDATE boards SET pos = ?2 WHERE id = ?1", params![id, pos])?;
+        }
+        tx.commit()
+    }
+
+    /// Guarda tablero y orden de los clips: (id, tablero, posición).
+    pub fn set_clip_positions(&self, order: &[(i64, i64, i64)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (id, board, pos) in order {
+            tx.execute(
+                "UPDATE clips SET board_id = ?2, pos = ?3 WHERE id = ?1",
+                params![id, board, pos],
+            )?;
+        }
+        tx.commit()
     }
 
     pub fn load_clips(&self) -> Result<Vec<ClipRow>> {

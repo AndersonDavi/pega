@@ -49,11 +49,34 @@ enum Action {
         text: String,
     },
     DeleteClip(i64),
+    SetBoardColor(i64, Option<u32>),
+    MoveBoard {
+        id: i64,
+        before: Option<i64>,
+    },
+    MoveClip {
+        id: i64,
+        board_id: i64,
+        before: Option<i64>,
+    },
     ImportPasteBar,
     SaveSettings(Settings),
     Lock,
     Hide,
     Quit,
+}
+
+/// Lo que se arrastra: un clip o un tablero (por id).
+struct DragClip(i64);
+struct DragBoard(i64);
+
+/// Colores para los tableros (0xRRGGBB).
+const BOARD_COLORS: &[u32] = &[
+    0xEF4444, 0xF97316, 0xEAB308, 0x22C55E, 0x14B8A6, 0x3B82F6, 0x8B5CF6, 0xEC4899,
+];
+
+fn rgb(c: u32) -> egui::Color32 {
+    egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 
 struct Editor {
@@ -81,6 +104,29 @@ pub struct PegaApp {
     /// Tema aplicado a egui; se reaplica solo si cambia en los ajustes.
     applied_theme: Option<Theme>,
     lock: Lock,
+    styled: bool,
+}
+
+/// Espaciado, esquinas y el azul del ícono como acento, para ambos temas.
+fn apply_style(ctx: &egui::Context) {
+    ctx.all_styles_mut(|s| {
+        s.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        s.spacing.button_padding = egui::vec2(8.0, 4.0);
+        s.visuals.window_corner_radius = 10.into();
+        s.visuals.menu_corner_radius = 8.into();
+        let w = &mut s.visuals.widgets;
+        for v in [
+            &mut w.noninteractive,
+            &mut w.inactive,
+            &mut w.hovered,
+            &mut w.active,
+            &mut w.open,
+        ] {
+            v.corner_radius = 6.into();
+        }
+        s.visuals.selection.bg_fill = egui::Color32::from_rgb(0x25, 0x63, 0xEB);
+        s.visuals.selection.stroke.color = egui::Color32::WHITE;
+    });
 }
 
 impl PegaApp {
@@ -88,6 +134,7 @@ impl PegaApp {
         let lock = Lock::new(&state.lock().unwrap().settings);
         Self {
             lock,
+            styled: false,
             state,
             query: String::new(),
             selected: 0,
@@ -198,6 +245,10 @@ impl egui_software_backend::App for PegaApp {
             actions.push(Action::Hide);
         }
 
+        if !self.styled {
+            apply_style(&ctx);
+            self.styled = true;
+        }
         if self.applied_theme != Some(st.settings.theme) {
             ctx.set_theme(match st.settings.theme {
                 Theme::System => egui::ThemePreference::System,
@@ -540,6 +591,8 @@ impl egui_software_backend::App for PegaApp {
                 if st.boards.is_empty() {
                     ui.weak("Crea un tablero para guardar textos fijos (datos, plantillas, respuestas…).");
                 }
+                let dragging_clip = egui::DragAndDrop::has_payload_of_type::<DragClip>(&ctx);
+                let dragging_board = egui::DragAndDrop::has_payload_of_type::<DragBoard>(&ctx);
                 for b in &st.boards {
                     let board_hit = state::matches(&state::fold(&b.name), &terms);
                     let clips: Vec<&state::Clip> = st
@@ -550,7 +603,14 @@ impl egui_software_backend::App for PegaApp {
                     if !terms.is_empty() && clips.is_empty() && !board_hit {
                         continue;
                     }
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                    let accent = b.color.map(rgb);
+                    let mut frame = egui::Frame::group(ui.style()).corner_radius(8.0);
+                    if let Some(color) = accent {
+                        frame = frame
+                            .stroke(egui::Stroke::new(1.5, color))
+                            .fill(color.gamma_multiply(0.08));
+                    }
+                    let board_resp = frame.show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
                             let editing = matches!(&self.renaming, Some((id, _)) if *id == b.id);
@@ -565,13 +625,46 @@ impl egui_software_backend::App for PegaApp {
                                     self.renaming = None;
                                 }
                             } else {
-                                ui.strong(&b.name);
+                                // El título es el asa para arrastrar el tablero.
+                                let title = egui::RichText::new(&b.name).strong();
+                                let title = match accent {
+                                    Some(color) => title.color(color),
+                                    None => title,
+                                };
+                                let handle = ui
+                                    .add(egui::Label::new(title).sense(egui::Sense::drag()))
+                                    .on_hover_cursor(egui::CursorIcon::Grab)
+                                    .on_hover_text("Arrastra para reordenar");
+                                handle.dnd_set_drag_payload(DragBoard(b.id));
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.menu_button("…", |ui| {
                                     if ui.button("Renombrar").clicked() {
                                         self.renaming = Some((b.id, b.name.clone()));
                                     }
+                                    ui.label("Color");
+                                    ui.horizontal(|ui| {
+                                        for &color in BOARD_COLORS {
+                                            let (rect, swatch) =
+                                                ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+                                            ui.painter().rect_filled(rect, 4.0, rgb(color));
+                                            if b.color == Some(color) {
+                                                ui.painter().rect_stroke(
+                                                    rect,
+                                                    4.0,
+                                                    egui::Stroke::new(2.0, ui.visuals().strong_text_color()),
+                                                    egui::StrokeKind::Outside,
+                                                );
+                                            }
+                                            if swatch.clicked() {
+                                                actions.push(Action::SetBoardColor(b.id, Some(color)));
+                                            }
+                                        }
+                                    });
+                                    if b.color.is_some() && ui.button("Sin color").clicked() {
+                                        actions.push(Action::SetBoardColor(b.id, None));
+                                    }
+                                    ui.separator();
                                     if ui.button("Borrar tablero").clicked() {
                                         actions.push(Action::DeleteBoard(b.id));
                                     }
@@ -588,9 +681,27 @@ impl egui_software_backend::App for PegaApp {
                         });
                         ui.horizontal_wrapped(|ui| {
                             for c in &clips {
+                                let mut chip = egui::Button::new(&c.name).corner_radius(12.0);
+                                if let Some(color) = accent {
+                                    chip = chip.fill(color.gamma_multiply(0.22));
+                                }
                                 let resp = ui
-                                    .button(&c.name)
-                                    .on_hover_text("Clic: copiar · Doble clic: pegar");
+                                    .add(chip)
+                                    .interact(egui::Sense::drag())
+                                    .on_hover_text("Clic: copiar · Doble clic: pegar · Arrastra para mover");
+                                resp.dnd_set_drag_payload(DragClip(c.id));
+                                // Soltar un clip sobre otro lo pone antes de ese.
+                                if dragging_clip && resp.dnd_hover_payload::<DragClip>().is_some() {
+                                    let r = resp.rect;
+                                    ui.painter().vline(
+                                        r.left() - 3.0,
+                                        r.y_range(),
+                                        egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
+                                    );
+                                }
+                                if let Some(p) = resp.dnd_release_payload::<DragClip>() {
+                                    actions.push(Action::MoveClip { id: p.0, board_id: b.id, before: Some(c.id) });
+                                }
                                 if resp.double_clicked() {
                                     actions.push(Action::Copy {
                                         item: Item::Text(c.text.clone()),
@@ -618,13 +729,36 @@ impl egui_software_backend::App for PegaApp {
                                     }
                                 });
                             }
+                            if clips.is_empty() {
+                                ui.weak(if dragging_clip { "Suelta aquí" } else { "Sin clips" });
+                            }
                         });
                     });
+                    // Soltar en el espacio libre del tablero: clip al final, o tablero antes de este.
+                    let area = &board_resp.response;
+                    if (dragging_clip || dragging_board) && area.contains_pointer() {
+                        ui.painter().rect_stroke(
+                            area.rect,
+                            8.0,
+                            egui::Stroke::new(1.5, ui.visuals().selection.bg_fill),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    if let Some(p) = area.dnd_release_payload::<DragClip>() {
+                        actions.push(Action::MoveClip { id: p.0, board_id: b.id, before: None });
+                    }
+                    if let Some(p) = area.dnd_release_payload::<DragBoard>() {
+                        actions.push(Action::MoveBoard { id: p.0, before: Some(b.id) });
+                    }
                     ui.add_space(6.0);
+                }
+                // Debajo del último tablero: soltar un tablero lo manda al final.
+                let rest = ui.allocate_response(ui.available_size().max(egui::vec2(0.0, 40.0)), egui::Sense::hover());
+                if let Some(p) = rest.dnd_release_payload::<DragBoard>() {
+                    actions.push(Action::MoveBoard { id: p.0, before: None });
                 }
             });
         });
-
         if let Some(ed) = &mut self.editor {
             let mut open = true;
             let mut done = false;
@@ -768,6 +902,13 @@ impl PegaApp {
                             text,
                         } => st.save_clip(id, board_id, &name, &text),
                         Action::DeleteClip(id) => st.delete_clip(id),
+                        Action::SetBoardColor(id, color) => st.set_board_color(id, color),
+                        Action::MoveBoard { id, before } => st.move_board(id, before),
+                        Action::MoveClip {
+                            id,
+                            board_id,
+                            before,
+                        } => st.move_clip(id, board_id, before),
                         Action::SaveSettings(s) => {
                             if st.save_settings(s) {
                                 win::reload_hotkey();
