@@ -9,6 +9,7 @@ use crate::i18n::t;
 use crate::image;
 use crate::lock::Lock;
 use crate::mask::mask;
+use crate::qr;
 use crate::query::Query;
 use crate::settings::{Settings, Theme};
 use crate::settings_ui::{Outcome, SettingsWindow};
@@ -72,6 +73,7 @@ enum Action {
     SaveSettings(Settings),
     Lock,
     PasteSequence(Vec<(String, bool)>),
+    ShowQr(String),
     Backup,
     PickRestore,
     Restore(PathBuf),
@@ -202,6 +204,8 @@ pub struct PegaApp {
     template_form: Option<TemplateForm>,
     /// Selección múltiple con Ctrl+clic, en el orden en que se eligió.
     multi: Vec<(Sel, String, bool)>,
+    /// QR abierto; la textura se suelta al cerrarlo.
+    qr: Option<egui::TextureHandle>,
 }
 
 /// Espaciado, esquinas y el azul del ícono como acento, para ambos temas.
@@ -237,6 +241,7 @@ impl PegaApp {
             confirm_restore: None,
             template_form: None,
             multi: Vec::new(),
+            qr: None,
             state,
             query: String::new(),
             selected: 0,
@@ -374,8 +379,10 @@ impl egui_software_backend::App for PegaApp {
         }
         let hotkey = st.settings.hotkey.label();
         let masked = |t: &str| mask(t, &st.settings.mask_words, st.settings.mask_cards);
-        let modal_open =
-            self.editor.is_some() || self.settings_window.is_some() || self.template_form.is_some();
+        let modal_open = self.editor.is_some()
+            || self.settings_window.is_some()
+            || self.template_form.is_some()
+            || self.qr.is_some();
 
         let just_shown = win::take_shown();
         if just_shown {
@@ -741,6 +748,11 @@ impl egui_software_backend::App for PegaApp {
                                 resp.context_menu(|ui| {
                                     if e.image.is_none() {
                                         paste_as_menu(ui, &e.text, false, &mut actions);
+                                        if e.text.len() <= qr::MAX_BYTES
+                                            && ui.button(t("Mostrar QR", "Show QR")).clicked()
+                                        {
+                                            actions.push(Action::ShowQr(e.text.clone()));
+                                        }
                                     }
                                     if ui.button(t("Pegar", "Paste")).clicked() {
                                         actions.push(Action::Copy {
@@ -983,6 +995,9 @@ impl egui_software_backend::App for PegaApp {
                                 }
                                 resp.context_menu(|ui| {
                                     paste_as_menu(ui, &c.text, true, &mut actions);
+                                    if c.text.len() <= qr::MAX_BYTES && ui.button(t("Mostrar QR", "Show QR")).clicked() {
+                                        actions.push(Action::ShowQr(c.text.clone()));
+                                    }
                                     if ui.button(t("Editar", "Edit")).clicked() {
                                         self.editor = Some(Editor {
                                             id: Some(c.id),
@@ -1075,6 +1090,35 @@ impl egui_software_backend::App for PegaApp {
             });
             if done || !open {
                 self.editor = None;
+            }
+        }
+
+        if let Some(tex) = &self.qr {
+            let mut close = false;
+            egui::Window::new(t("QR para el celular", "QR for your phone"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(&ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.image((tex.id(), tex.size_vec2()));
+                        ui.label(t(
+                            "Escanéalo con la cámara del celular.",
+                            "Scan it with your phone camera.",
+                        ));
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            t(
+                                "Cualquiera que vea tu pantalla puede leerlo.",
+                                "Anyone who can see your screen can read it.",
+                            ),
+                        );
+                        close = ui.button(t("Cerrar", "Close")).clicked()
+                            || ui.input(|i| i.key_pressed(Key::Escape));
+                    });
+                });
+            if close {
+                self.qr = None;
             }
         }
 
@@ -1261,6 +1305,11 @@ impl PegaApp {
                 }
                 Action::Hide => win::hide(ctx),
                 Action::Lock => self.lock.lock_now(),
+                Action::ShowQr(text) => {
+                    if let Some(img) = qr::image(&text, 5) {
+                        self.qr = Some(ctx.load_texture("qr", img, egui::TextureOptions::NEAREST));
+                    }
+                }
                 Action::PasteSequence(items) => {
                     self.multi.clear();
                     win::paste_sequence(ctx, items);
@@ -1358,6 +1407,7 @@ impl PegaApp {
                         | Action::ImportPasteBar
                         | Action::Lock
                         | Action::PasteSequence(_)
+                        | Action::ShowQr(_)
                         | Action::Backup
                         | Action::PickRestore
                         | Action::Restore(_)

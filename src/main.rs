@@ -11,6 +11,7 @@ mod image;
 mod import;
 mod lock;
 mod mask;
+mod qr;
 mod query;
 mod settings;
 mod settings_ui;
