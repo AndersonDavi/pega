@@ -1,0 +1,13 @@
+PackageIdentifier: AndersonDavi.Pega
+PackageVersion: 0.1.0
+PackageLocale: es-ES
+Publisher: Anderson Rueda
+PackageName: Pega
+License: MIT
+ShortDescription: Gestor de portapapeles nativo para Windows, liviano y con el historial cifrado.
+Tags:
+  - clipboard
+  - portapapeles
+  - clipboard-manager
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

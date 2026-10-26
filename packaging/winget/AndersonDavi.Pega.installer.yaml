@@ -1,0 +1,16 @@
+# Plantilla: reemplazar versión, URL y SHA-256 por los de la release publicada.
+PackageIdentifier: AndersonDavi.Pega
+PackageVersion: 0.1.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: pega.exe
+    PortableCommandAlias: pega
+  - RelativeFilePath: pega-cli.exe
+    PortableCommandAlias: pega-cli
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/AndersonDavi/pega/releases/download/v0.1.0/pega-windows-x64.zip
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0

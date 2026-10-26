@@ -29,6 +29,14 @@ pero en un solo proceso sin navegador embebido.
 - **Respaldos** y restauración.
 - **Clic** copia; **doble clic** o **Enter** pega en la ventana anterior; `Shift+Enter` solo copia.
 - Las capturas repetidas (ShareX y similares avisan varias veces) no se duplican: se comparan por hash de píxeles.
+- **Filtros** en la búsqueda: `app:chrome`, `lang:json`, `tipo:imagen`, `fijado`, `hace:2h`.
+- **Pegar como…** mayúsculas, minúsculas, título, una línea, JSON con o sin formato, URL codificada.
+- **Plantillas** en los clips: `{fecha}`, `{hora}`, `{portapapeles}` y campos `{campo:Nombre}` que se piden al pegar.
+- **Pegado rápido**: `Ctrl+1…9` pega las primeras entradas; varias seleccionadas con `Ctrl+clic`
+  se pegan en secuencia separadas por Tab (formularios); `Ctrl+Alt+Shift+V` pega sin formato.
+- **QR** de un texto o clip para pasarlo al celular.
+- **OCR** opcional de las capturas (con el OCR de Windows, en `pega-ocr.exe`, un proceso aparte que
+  se cierra al terminar): el texto de la imagen entra en la búsqueda.
 
 ## Privacidad
 
@@ -41,8 +49,15 @@ pero en un solo proceso sin navegador embebido.
   ni se suba a la nube.
 - **Ocultar palabras** sensibles y números de tarjeta en la lista (al pegar sale el texto real).
 - **Bloqueo con PIN**, al iniciar y tras N minutos sin uso.
+- Los **códigos de un solo uso** (4 a 6 dígitos) y lo copiado desde **apps sensibles** se borran solos
+  a los N minutos (5 por defecto).
 - Los respaldos siguen cifrados: solo los puede restaurar el mismo usuario de Windows.
-- Los datos viven en `%APPDATA%\Pega\pega.db`.
+- **Exportar** a un archivo `.pega` con contraseña (XChaCha20-Poly1305 + Argon2id) para llevar
+  el historial y los tableros a otro PC o usuario.
+- Los datos viven en `%APPDATA%\Pega\pega.db`. **Modo portable**: con un archivo llamado `portable`
+  junto a `pega.exe`, los datos van a la carpeta `datos\` a su lado (para una memoria USB).
+- **Accesibilidad** (lectores de pantalla) opcional en Ajustes, apagada por defecto: cuando un
+  lector se desconecta puede provocar repintados de más, así que se activa solo si se necesita.
 
 ## Compilar
 
@@ -52,9 +67,13 @@ Requisitos: [Rust](https://rustup.rs) y Visual Studio (o Build Tools) con "Desar
 build.cmd --release
 ```
 
-El ejecutable queda en `%TEMP%\pega-target\release\pega.exe` (se puede cambiar con `CARGO_TARGET_DIR`).
+Los ejecutables quedan en `%TEMP%\pega-target\release\` (se puede cambiar con `CARGO_TARGET_DIR`):
+`pega.exe` (la app), `pega-cli.exe` (terminal) y `pega-ocr.exe` (OCR, debe ir junto a `pega.exe`).
 
 `pega.exe --hidden` arranca sin mostrar la ventana.
+
+Tests: `cargo test` (el de OCR se salta si Windows no tiene un idioma de OCR instalado).
+Publicar versiones: ver [DISTRIBUCION.md](DISTRIBUCION.md).
 
 ## Desde la terminal
 

@@ -75,3 +75,30 @@ pub fn protect_str(s: &str) -> Option<Vec<u8>> {
 pub fn unprotect_str(cipher: &[u8]) -> Option<String> {
     unprotect(cipher).and_then(|v| String::from_utf8(v).ok())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip_and_no_plaintext() {
+        let secret = "Cédula 1098765432";
+        let enc = protect_str(secret).unwrap();
+        assert!(
+            !enc.windows(10).any(|w| w == b"1098765432"),
+            "no queda en claro"
+        );
+        assert_eq!(unprotect_str(&enc).unwrap(), secret);
+        // Cada cifrado es distinto (DPAPI usa una sal nueva), pero ambos se descifran.
+        assert_ne!(enc, protect_str(secret).unwrap());
+    }
+
+    #[test]
+    fn tampered_or_foreign_data_fails() {
+        let mut enc = protect(b"hola").unwrap();
+        let last = enc.len() - 1;
+        enc[last] ^= 0xFF;
+        assert!(unprotect(&enc).is_none());
+        assert!(unprotect(b"basura que no es DPAPI").is_none());
+    }
+}

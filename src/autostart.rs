@@ -40,7 +40,7 @@ pub fn set(enabled: bool) -> bool {
         let Ok(exe) = std::env::current_exe() else {
             return false;
         };
-        let command = wide(&format!("\"{}\" --hidden", exe.display()));
+        let command = wide(&command_for(&exe));
         RegSetKeyValueW(
             HKEY_CURRENT_USER,
             key.as_ptr(),
@@ -52,9 +52,28 @@ pub fn set(enabled: bool) -> bool {
     }
 }
 
+/// Lo que se guarda en Run: la ruta entre comillas (puede tener espacios) y `--hidden`.
+fn command_for(exe: &std::path::Path) -> String {
+    format!("\"{}\" --hidden", exe.display())
+}
+
 /// Si el .exe cambió de carpeta, la entrada apunta al lugar nuevo.
 pub fn refresh() {
     if is_enabled() {
         set(true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_quotes_path_and_starts_hidden() {
+        let exe = std::path::Path::new(r"C:\Program Files\Pega\pega.exe");
+        assert_eq!(
+            command_for(exe),
+            r#""C:\Program Files\Pega\pega.exe" --hidden"#
+        );
     }
 }

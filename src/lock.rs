@@ -124,3 +124,45 @@ impl Lock {
         self.entry.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_pin() -> Settings {
+        Settings {
+            pin: "2468".into(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn starts_locked_only_with_pin() {
+        assert!(Lock::new(&with_pin()).locked);
+        assert!(!Lock::new(&Settings::default()).locked);
+    }
+
+    #[test]
+    fn right_pin_unlocks_and_five_wrong_make_you_wait() {
+        let s = with_pin();
+        let mut lock = Lock::new(&s);
+        for _ in 0..MAX_FAILURES {
+            lock.entry = "0000".into();
+            lock.try_unlock(&s, 10.0);
+        }
+        assert!(lock.locked);
+        assert_eq!(
+            lock.retry_at,
+            10.0 + WAIT_SECS,
+            "tras 5 fallos hay que esperar"
+        );
+        assert!(
+            lock.entry.is_empty(),
+            "el PIN escrito no se queda en memoria"
+        );
+        lock.entry = "2468".into();
+        lock.try_unlock(&s, 50.0);
+        assert!(!lock.locked);
+        assert_eq!(lock.failures, 0);
+    }
+}

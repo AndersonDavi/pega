@@ -84,6 +84,11 @@ pub fn import_pastebar(state: &mut State) -> Result<Summary, String> {
             "Couldn't read PasteBar: {e}"
         )
     })?;
+    import_from_bytes(state, &bytes)
+}
+
+/// Importa desde el contenido de una base de PasteBar (separado para poder probarlo).
+pub fn import_from_bytes(state: &mut State, bytes: &[u8]) -> Result<Summary, String> {
     let mut conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
     conn.deserialize_read_exact(MAIN_DB, &bytes[..], bytes.len(), true)
         .map_err(|e| {
@@ -99,7 +104,6 @@ pub fn import_pastebar(state: &mut State) -> Result<Summary, String> {
         )
     })?;
     drop(conn);
-    drop(bytes);
 
     let multi_collection = {
         let mut names: Vec<&str> = items.values().map(|i| i.collection.as_str()).collect();
@@ -201,4 +205,70 @@ pub fn import_pastebar(state: &mut State) -> Result<Summary, String> {
         }
     }
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::Store;
+    use std::path::Path;
+
+    /// Una base con el mismo esquema (lo que usa el importador) que PasteBar 0.6.
+    fn fake_pastebar() -> Vec<u8> {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE collections (collection_id TEXT, title TEXT);
+             CREATE TABLE tabs (tab_id TEXT, collection_id TEXT, tab_name TEXT, tab_order_number INT);
+             CREATE TABLE items (item_id TEXT, name TEXT, value TEXT, is_board BOOL, is_image BOOL, is_deleted BOOL);
+             CREATE TABLE collection_clips (collection_id TEXT, item_id TEXT, tab_id TEXT, parent_id TEXT, order_number INT);
+             INSERT INTO collections VALUES ('c', 'Personal');
+             INSERT INTO tabs VALUES ('t1', 'c', 'Your Clips', 0), ('t2', 'c', 'Web Links', 1);
+             INSERT INTO items VALUES
+               ('b1', 'Notes', NULL, 1, 0, 0),
+               ('b2', 'My Information', NULL, 1, 0, 0),
+               ('b3', 'Research', NULL, 1, 0, 0),
+               ('k1', 'Sizes', 'M', 0, 0, 0),
+               ('k2', 'Cédula', '123', 0, 0, 0),
+               ('k3', 'Google', 'https://google.com', 0, 0, 0),
+               ('k4', 'Borrado', 'x', 0, 0, 1),
+               ('k5', 'Foto', 'img', 0, 1, 0),
+               ('k6', 'Vacío', '', 0, 0, 0);
+             INSERT INTO collection_clips VALUES
+               ('c', 'b1', 't1', NULL, 0), ('c', 'b2', 't1', 'b1', 1), ('c', 'b3', 't2', NULL, 0),
+               ('c', 'k1', 't1', 'b2', 0), ('c', 'k2', 't1', 'b1', 0), ('c', 'k3', 't2', 'b3', 0),
+               ('c', 'k4', 't1', 'b1', 1), ('c', 'k5', 't1', 'b1', 2), ('c', 'k6', 't1', 'b1', 3);",
+        )
+        .unwrap();
+        c.serialize(MAIN_DB).unwrap().to_vec()
+    }
+
+    #[test]
+    fn imports_boards_nested_and_from_other_tabs() {
+        let mut s = State::load(Store::open(Path::new(":memory:")).unwrap()).unwrap();
+        let sum = import_from_bytes(&mut s, &fake_pastebar()).unwrap();
+        assert_eq!(
+            (sum.boards, sum.clips, sum.skipped),
+            (3, 3, 2),
+            "imagen y vacío se omiten; borrado no cuenta"
+        );
+        let names: Vec<&str> = s.boards.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Notes", "Notes / My Information", "Web Links / Research"]
+        );
+        assert!(
+            s.clips
+                .iter()
+                .any(|c| c.name == "Cédula" && c.text == "123")
+        );
+        // Repetir no duplica.
+        let again = import_from_bytes(&mut s, &fake_pastebar()).unwrap();
+        assert_eq!((again.boards, again.clips), (0, 0));
+    }
+
+    #[test]
+    fn rejects_other_files() {
+        let mut s = State::load(Store::open(Path::new(":memory:")).unwrap()).unwrap();
+        assert!(import_from_bytes(&mut s, b"no es una base").is_err());
+    }
 }

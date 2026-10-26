@@ -181,3 +181,67 @@ pub fn to_dib(img: &Rgba) -> Vec<u8> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> Rgba {
+        // 3x2: colores distintos y un píxel semitransparente.
+        let pixels = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, //
+            10, 20, 30, 128, 200, 200, 200, 255, 0, 0, 0, 255,
+        ];
+        Rgba {
+            width: 3,
+            height: 2,
+            pixels,
+        }
+    }
+
+    #[test]
+    fn dib_roundtrip_keeps_pixels_and_alpha() {
+        let img = sample();
+        let back = from_dib(&to_dib(&img)).unwrap();
+        assert_eq!((back.width, back.height), (3, 2));
+        assert_eq!(back.pixels, img.pixels);
+    }
+
+    #[test]
+    fn dib_without_alpha_becomes_opaque() {
+        // 24 bits, abajo hacia arriba, filas alineadas a 4 bytes: 1x1 rojo.
+        let mut dib = vec![0u8; 40];
+        dib[0] = 40;
+        dib[4] = 1; // ancho
+        dib[8] = 1; // alto
+        dib[12] = 1; // planos
+        dib[14] = 24; // bits
+        dib.extend_from_slice(&[0, 0, 255, 0]); // BGR + relleno
+        let img = from_dib(&dib).unwrap();
+        assert_eq!(img.pixels, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn png_roundtrip_and_hash() {
+        let img = sample();
+        let back = decode_png(&encode_png(&img, png::Compression::Fast).unwrap()).unwrap();
+        assert_eq!(back.pixels, img.pixels);
+        assert_eq!(hash(&img), hash(&back), "mismos píxeles, mismo hash");
+        let mut other = sample();
+        other.pixels[0] = 254;
+        assert_ne!(hash(&img), hash(&other));
+    }
+
+    #[test]
+    fn fit_keeps_aspect_and_never_enlarges() {
+        let img = Rgba {
+            width: 400,
+            height: 100,
+            pixels: vec![255; 400 * 100 * 4],
+        };
+        let t = thumbnail(&img);
+        assert_eq!((t.width, t.height), (THUMB_W, 30));
+        let small = fit(&sample(), 100, 100);
+        assert_eq!((small.width, small.height), (3, 2));
+    }
+}

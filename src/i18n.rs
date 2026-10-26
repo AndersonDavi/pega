@@ -37,3 +37,18 @@ macro_rules! tr {
         if $crate::i18n::english() { format!($en, $($arg)*) } else { format!($es, $($arg)*) }
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picks_language() {
+        apply(UiLang::English);
+        assert_eq!(t("hola", "hello"), "hello");
+        assert_eq!(crate::tr!("{} copias", "{} copies", 3), "3 copies");
+        apply(UiLang::Spanish);
+        assert_eq!(t("hola", "hello"), "hola");
+        assert_eq!(crate::tr!("{} copias", "{} copies", 3), "3 copias");
+    }
+}
