@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use egui_software_backend::{SoftwareBackendAppConfiguration, run_app_with_software_backend};
-use pega::{app, autostart, backup, image, paths, state, store, tr, win};
+use pega::{app, autostart, backup, image, paths, shortcut, state, store, tr, win};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -40,7 +40,10 @@ fn main() {
     let restored = restore.map(|b| backup::apply_restore(&dir, &b));
     // Sin consola, un error al abrir la base cerraba la app sin decir nada: ahora se avisa.
     let db = dir.join("pega.db");
-    let loaded = store::Store::open(&db).and_then(state::State::load);
+    let loaded = store::Store::open(&db).and_then(|store| {
+        shortcut::refresh(&store);
+        state::State::load(store)
+    });
     // Al cargar se aplica el idioma de los ajustes; los avisos se arman después.
     let mut loaded = loaded.unwrap_or_else(|e| {
         win::fatal(&tr!(

@@ -9,7 +9,9 @@ copias (texto e imágenes), cifrado, y lo tienes a un atajo de distancia.
 > avisará al abrirlo). Los errores y sugerencias son bienvenidos en
 > [Issues](https://github.com/AndersonDavi/pega/issues).
 
-**[Descargar](https://github.com/AndersonDavi/pega/releases)**: descomprimir y abrir `pega.exe`. No necesita instalación.
+**[Descargar](https://github.com/AndersonDavi/pega/releases)**: descomprimir en una carpeta fija y abrir
+`pega.exe`. No necesita instalación: al abrirlo crea su acceso en el menú Inicio, así sale al
+buscarlo en Windows (si lo borras, no vuelve).
 
 ![Ventana de Pega con historial y tableros](docs/captura.png)
 
@@ -78,7 +80,8 @@ pero en un solo proceso sin navegador embebido.
 - **Exportar** a un archivo `.pega` con contraseña (XChaCha20-Poly1305 + Argon2id) para llevar
   el historial y los tableros a otro PC o usuario.
 - Los datos viven en `%APPDATA%\Pega\pega.db`. **Modo portable**: con un archivo llamado `portable`
-  junto a `pega.exe`, los datos van a la carpeta `datos\` a su lado (para una memoria USB).
+  junto a `pega.exe`, los datos van a la carpeta `datos\` a su lado (para una memoria USB) y no
+  se crea el acceso en el menú Inicio.
 - **Accesibilidad** (lectores de pantalla) opcional en Ajustes, apagada por defecto: cuando un
   lector se desconecta puede provocar repintados de más, así que se activa solo si se necesita.
 

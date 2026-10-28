@@ -19,6 +19,7 @@ pub mod qr;
 pub mod query;
 pub mod settings;
 pub mod settings_ui;
+pub mod shortcut;
 pub mod state;
 pub mod store;
 pub mod sync;
